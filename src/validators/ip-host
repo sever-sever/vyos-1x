@@ -1,3 +1,8 @@
 #!/bin/sh
 
-ipaddrcheck --is-any-host $1
+# T2578 validation for /31 ip address
+if [ `echo $1 | grep "/31" | wc -l` -eq "1" ]; then
+    ipaddrcheck --is-any-cidr $1
+else
+    ipaddrcheck --is-any-host $1
+fi
