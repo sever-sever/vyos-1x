@@ -47,7 +47,8 @@ def get_config(config=None):
                 'ses_ipv4_hold'       : None,
                 'ses_ipv6_hold'       : None,
                 'export_ipv4_exp'     : False,
-                'export_ipv6_exp'     : False
+                'export_ipv6_exp'     : False,
+                'ttl_security'        : None
 
         },
         'ldp'        : {
@@ -60,7 +61,8 @@ def get_config(config=None):
                 'ses_ipv4_hold'       : None,
                 'ses_ipv6_hold'       : None,
                 'export_ipv4_exp'     : False,
-                'export_ipv6_exp'     : False
+                'export_ipv6_exp'     : False,
+                'ttl_security'        : None
 
         }
     }
@@ -145,14 +147,16 @@ def get_config(config=None):
     for neighbor in conf.list_effective_nodes('neighbor'):
         mpls_conf['old_ldp']['neighbors'].update({
             neighbor : {
-                'password' : conf.return_effective_value('neighbor {0} password'.format(neighbor))
+                'password' : conf.return_effective_value('neighbor {0} password'.format(neighbor)),
+                'ttl_security' : conf.return_effective_value('neighbor {0} ttl-security'.format(neighbor))
             }
         })
 
     for neighbor in conf.list_nodes('neighbor'):
         mpls_conf['ldp']['neighbors'].update({
             neighbor : {
-                'password' : conf.return_value('neighbor {0} password'.format(neighbor))
+                'password' : conf.return_value('neighbor {0} password'.format(neighbor)),
+                'ttl_security' : conf.return_value('neighbor {0} ttl-security'.format(neighbor))
             }
         })
 
