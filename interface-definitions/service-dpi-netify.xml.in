@@ -1,0 +1,477 @@
+<?xml version="1.0"?>
+<!-- DPI NETIFY configuration  -->
+<interfaceDefinition>
+  <node name="service">
+    <children>
+      <node name="dpi" owner="${vyos_conf_scripts_dir}/service-dpi-netify.py">
+        <properties>
+          <help>Deep packet inspection (DPI)</help>
+          <priority>420</priority>
+        </properties>
+        <children>
+          <node name="netify">
+            <properties>
+              <help>Service netify</help>
+            </properties>
+            <children>
+              <node name="agent">
+                <properties>
+                  <help>Agent parameters</help>
+                </properties>
+                <children>
+                  <leafNode name="conntrack">
+                    <properties>
+                      <help>conntrack_help</help>
+                      <completionHelp>
+                        <list>disable enable</list>
+                      </completionHelp>
+                      <valueHelp>
+                        <format>disable</format>
+                        <description>disable_description</description>
+                      </valueHelp>
+                      <valueHelp>
+                        <format>enable</format>
+                        <description>enable_description</description>
+                      </valueHelp>
+                      <constraint>
+                        <regex>^(disable|enable)$</regex>
+                      </constraint>
+                    </properties>
+                  </leafNode>
+                  <node name="dns-hint">
+                    <properties>
+                      <help>Dns hint</help>
+                    </properties>
+                    <children>
+                      <leafNode name="cache">
+                        <properties>
+                          <help>cache_help</help>
+                          <completionHelp>
+                            <list>disable enable</list>
+                          </completionHelp>
+                          <valueHelp>
+                            <format>disable</format>
+                            <description>disable_description</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>enable</format>
+                            <description>enable_description</description>
+                          </valueHelp>
+                          <constraint>
+                            <regex>^(disable|enable)$</regex>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="mode">
+                        <properties>
+                          <help>mode_help</help>
+                          <completionHelp>
+                            <list>disabled persistent volatile</list>
+                          </completionHelp>
+                          <valueHelp>
+                            <format>disabled</format>
+                            <description>disabled_description</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>persistent</format>
+                            <description>persistent_description</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>volatile</format>
+                            <description>volatile_description</description>
+                          </valueHelp>
+                          <constraint>
+                            <regex>^(disabled|persistent|volatile)$</regex>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="ttl">
+                        <properties>
+                          <help>ttl_help</help>
+                          <valueHelp>
+                            <format>u32:60-28800</format>
+                            <description>ttl_change_me</description>
+                          </valueHelp>
+                          <constraint>
+                            <validator name="numeric" argument="--range 60-28800"/>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                    </children>
+                  </node>
+                  <node name="inspect-packets">
+                    <properties>
+                      <help>inspect-packets_help</help>
+                    </properties>
+                    <children>
+                      <leafNode name="tcp">
+                        <properties>
+                          <help>tcp__help</help>
+                          <valueHelp>
+                            <format>u32:1-65535</format>
+                            <description>tcp__change_me</description>
+                          </valueHelp>
+                          <constraint>
+                            <validator name="numeric" argument="--range 1-65535"/>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="udp">
+                        <properties>
+                          <help>udp__help</help>
+                          <valueHelp>
+                            <format>u32:1-65535</format>
+                            <description>udp__change_me</description>
+                          </valueHelp>
+                          <constraint>
+                            <validator name="numeric" argument="--range 1-65535"/>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                    </children>
+                  </node>
+                  <tagNode name="interface">
+                    <properties>
+                      <help>interface_help</help>
+                      <completionHelp>
+                        <script>${vyos_completion_dir}/list_interfaces.py</script>
+                      </completionHelp>
+                      <valueHelp>
+                        <format>txt</format>
+                        <description>Interface name</description>
+                      </valueHelp>
+                      <constraint>
+                        <validator name="interface-name"/>
+                      </constraint>
+                    </properties>
+                    <children>
+                      <leafNode name="bpf-filter">
+                        <properties>
+                          <help>bpf-filter_help</help>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="network">
+                        <properties>
+                          <help>network_help</help>
+                          <valueHelp>
+                            <format>ipv4</format>
+                            <description>Address to match against</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>ipv4net</format>
+                            <description>Prefix to match against</description>
+                          </valueHelp>
+                          <constraint>
+                            <validator name="ip-prefix"/>
+                          </constraint>
+                          <multi/>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="physical-interface">
+                        <properties>
+                          <help>Physical Interface used for xxx_changeme</help>
+                          <completionHelp>
+                            <script>${vyos_completion_dir}/list_interfaces.py --broadcast</script>
+                          </completionHelp>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="type">
+                        <properties>
+                          <help>type_help</help>
+                          <completionHelp>
+                            <list>internal external</list>
+                          </completionHelp>
+                          <valueHelp>
+                            <format>internal</format>
+                            <description>internal_description</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>external</format>
+                            <description>external_description</description>
+                          </valueHelp>
+                          <constraint>
+                            <regex>^(internal|external)$</regex>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                    </children>
+                  </tagNode>
+                  <leafNode name="netlink">
+                    <properties>
+                      <help>netlink_help</help>
+                      <completionHelp>
+                        <list>disable enable</list>
+                      </completionHelp>
+                      <valueHelp>
+                        <format>disable</format>
+                        <description>disable_description</description>
+                      </valueHelp>
+                      <valueHelp>
+                        <format>enable</format>
+                        <description>enable_description</description>
+                      </valueHelp>
+                      <constraint>
+                        <regex>^(disable|enable)$</regex>
+                      </constraint>
+                    </properties>
+                  </leafNode>
+                </children>
+              </node>
+              <node name="rules">
+                <properties>
+                  <help>rule_help</help>
+                </properties>
+                <children>
+                  <tagNode name="block">
+                    <properties>
+                      <help>block_test</help>
+                      <valueHelp>
+                        <format>1-999999</format>
+                        <description>Number for block rule</description>
+                      </valueHelp>
+                      <constraint>
+                        <validator name="numeric" argument="--range 1-999999"/>
+                      </constraint>
+                      <constraintErrorMessage>Block rule number must be between 1 and 999999</constraintErrorMessage>
+                    </properties>
+                    <children>
+                      <node name="application">
+                        <properties>
+                          <help>test</help>
+                        </properties>
+                        <children>
+                          <leafNode name="category">
+                            <properties>
+                              <help>category__help</help>
+                              <valueHelp>
+                                <format>u32:1-65535</format>
+                                <description>category__change_me</description>
+                              </valueHelp>
+                              <constraint>
+                                <validator name="numeric" argument="--range 1-65535"/>
+                              </constraint>
+                            </properties>
+                          </leafNode>
+                          <leafNode name="id">
+                            <properties>
+                              <help>id__help</help>
+                              <valueHelp>
+                                <format>u32:1-65535</format>
+                                <description>id__change_me</description>
+                              </valueHelp>
+                              <constraint>
+                                <validator name="numeric" argument="--range 1-65535"/>
+                              </constraint>
+                            </properties>
+                          </leafNode>
+                        </children>
+                      </node>
+                      <leafNode name="direction">
+                        <properties>
+                          <help>direction_help</help>
+                          <completionHelp>
+                            <list>both egress ingress</list>
+                          </completionHelp>
+                          <valueHelp>
+                            <format>both</format>
+                            <description>both_description</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>egress</format>
+                            <description>egress_description</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>ingress</format>
+                            <description>ingress_description</description>
+                          </valueHelp>
+                          <constraint>
+                            <regex>^(both|egress|ingress)$</regex>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                      <node name="schedule">
+                        <properties>
+                          <help>test</help>
+                        </properties>
+                        <children>
+                          <node name="time">
+                            <properties>
+                              <help>time_help</help>
+                            </properties>
+                            <children>
+                              <leafNode name="end">
+                                <properties>
+                                  <help>end_help</help>
+                                </properties>
+                              </leafNode>
+                              <leafNode name="start">
+                                <properties>
+                                  <help>start_help</help>
+                                </properties>
+                              </leafNode>
+                            </children>
+                          </node>
+                          <leafNode name="weekdays">
+                            <properties>
+                              <help>weekdays_help</help>
+                              <completionHelp>
+                                <list>sunday monday tuesday wednesday thursday friday saturday</list>
+                              </completionHelp>
+                              <valueHelp>
+                                <format>sunday</format>
+                                <description>sunday_description</description>
+                              </valueHelp>
+                              <valueHelp>
+                                <format>monday</format>
+                                <description>monday_description</description>
+                              </valueHelp>
+                              <valueHelp>
+                                <format>tuesday</format>
+                                <description>tuesday_description</description>
+                              </valueHelp>
+                              <valueHelp>
+                                <format>wednesday</format>
+                                <description>wednesday_description</description>
+                              </valueHelp>
+                              <valueHelp>
+                                <format>thursday</format>
+                                <description>thursday_description</description>
+                              </valueHelp>
+                              <valueHelp>
+                                <format>friday</format>
+                                <description>friday_description</description>
+                              </valueHelp>
+                              <valueHelp>
+                                <format>saturday</format>
+                                <description>saturday_description</description>
+                              </valueHelp>
+                              <constraint>
+                                <regex>^(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$</regex>
+                              </constraint>
+                              <multi/>
+                            </properties>
+                          </leafNode>
+                        </children>
+                      </node>
+                      <node name="protocol">
+                        <properties>
+                          <help>test</help>
+                        </properties>
+                        <children>
+                          <leafNode name="category">
+                            <properties>
+                              <help>category__help</help>
+                              <valueHelp>
+                                <format>u32:1-65535</format>
+                                <description>category__change_me</description>
+                              </valueHelp>
+                              <constraint>
+                                <validator name="numeric" argument="--range 1-65535"/>
+                              </constraint>
+                            </properties>
+                          </leafNode>
+                          <leafNode name="id">
+                            <properties>
+                              <help>id__help</help>
+                              <valueHelp>
+                                <format>u32:1-65535</format>
+                                <description>id__change_me</description>
+                              </valueHelp>
+                              <constraint>
+                                <validator name="numeric" argument="--range 1-65535"/>
+                              </constraint>
+                            </properties>
+                          </leafNode>
+                        </children>
+                      </node>
+                    </children>
+                  </tagNode>
+                  <leafNode name="mark-bitshift">
+                    <properties>
+                      <help>mark-bitshift__help</help>
+                      <valueHelp>
+                        <format>u32:1-65535</format>
+                        <description>mark-bitshift__change_me</description>
+                      </valueHelp>
+                      <constraint>
+                        <validator name="numeric" argument="--range 1-65535"/>
+                      </constraint>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="mark-mask">
+                    <properties>
+                      <help>mark-mask__help</help>
+                      <valueHelp>
+                        <format>u32:1-65535</format>
+                        <description>mark-mask__change_me</description>
+                      </valueHelp>
+                      <constraint>
+                        <validator name="numeric" argument="--range 1-65535"/>
+                      </constraint>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="maximum-entries">
+                    <properties>
+                      <help>maximum-entries__help</help>
+                      <valueHelp>
+                        <format>u32:1-65535</format>
+                        <description>maximum-entries__change_me</description>
+                      </valueHelp>
+                      <constraint>
+                        <validator name="numeric" argument="--range 1-65535"/>
+                      </constraint>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="timeout">
+                    <properties>
+                      <help>timeout__help</help>
+                      <valueHelp>
+                        <format>u32:1-65535</format>
+                        <description>timeout__change_me</description>
+                      </valueHelp>
+                      <constraint>
+                        <validator name="numeric" argument="--range 1-65535"/>
+                      </constraint>
+                    </properties>
+                  </leafNode>
+                  <tagNode name="whitelist">
+                    <properties>
+                      <help>whitelist_help</help>
+                      <valueHelp>
+                        <format>1-999999</format>
+                        <description>Number for whitelist rule</description>
+                      </valueHelp>
+                      <constraint>
+                        <validator name="numeric" argument="--range 1-999999"/>
+                      </constraint>
+                      <constraintErrorMessage>White rule number must be between 1 and 999999</constraintErrorMessage>
+                    </properties>
+                    <children>
+                      <leafNode name="network">
+                        <properties>
+                          <help>network_help</help>
+                          <valueHelp>
+                            <format>ipv4</format>
+                            <description>Address to match against</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>ipv4net</format>
+                            <description>Prefix to match against</description>
+                          </valueHelp>
+                          <constraint>
+                            <validator name="ip-prefix"/>
+                          </constraint>
+                          <multi/>
+                        </properties>
+                      </leafNode>
+                    </children>
+                  </tagNode>
+                </children>
+              </node>
+            </children>
+          </node>
+        </children>
+      </node>
+    </children>
+  </node>
+</interfaceDefinition>
