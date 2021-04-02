@@ -1,0 +1,11 @@
+!
+{% for name, route_map_config in route_map.items() %}
+{%   for seq, rule_conf in route_map_config.rule.items() %}
+ route-map {{ name }} {{ seq }} {{ rule_conf.action }} 
+{%     if rule_conf.match is defined %}
+{%       if rule_conf.match.as_path is defined %}
+  match as-path {{ rule_conf.match.as_path }}
+{%       endif%}
+{%     endif %}
+{%   endfor %}
+{% endfor %}
