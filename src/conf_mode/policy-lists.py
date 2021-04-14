@@ -47,14 +47,14 @@ def get_config(config=None):
     else:
         conf = Config()
     base = ['npolicy']
-    policy = conf.get_config_dict(base, key_mangling=('-', '_'))
+    policy = conf.get_config_dict(base, key_mangling=('-', '_'), get_first_key=True)
 
     # Bail out early if configuration tree does not exist
     if not conf.exists(base):
         return policy
 
     pprint(policy)
-    exit(1)
+#    exit(1)
     return policy
 
 def verify(policy):
@@ -69,17 +69,17 @@ def generate(policy):
         return None
 
     # render(config) not needed, its only for debug
-  #  render(config_file, 'frr/policy.frr.tmpl', policy)
-  #  policy['new_frr_config'] = render_to_string('frr/policy.frr.tmpl')
+    render(config_file, 'frr/policy.frr.tmpl', policy)
+    policy['new_frr_config'] = render_to_string('frr/policy.frr.tmpl', policy)
 
     return None
 
 def apply(policy):
     # Save original configuration prior to starting any commit actions
-   # frr_cfg = frr.FRRConfig()
-   # frr_cfg.load_configuration(frr_daemon)
-   # frr_cfg.modify_section(f'ip', '')
-   # frr_cfg.add_before(r'(line vty)', policy['new_frr_config'])
+    frr_cfg = frr.FRRConfig()
+    frr_cfg.load_configuration(frr_daemon)
+    frr_cfg.modify_section(r'(route-map|access-list|ip prefix-list) .*', '')
+    frr_cfg.add_before(r'(line vty)', policy['new_frr_config'])
 
     # Debugging
     if DEBUG:
@@ -99,9 +99,9 @@ def apply(policy):
 
     # If FRR config is blank, rerun the blank commit x times due to frr-reload
     # behavior/bug not properly clearing out on one commit.
-   # if policy['new_frr_config'] == '':
-   #     for a in range(5):
-   #         frr_cfg.commit_configuration(frr_daemon)
+    if policy['new_frr_config'] == '':
+        for a in range(2):
+            frr_cfg.commit_configuration(frr_daemon)
 
 
     return None

@@ -1,0 +1,30 @@
+!
+{% for name, route_map_config in route_map.items() %}
+
+{%   for seq, rule_conf in route_map_config.rule.items() %}
+{%     if rule_conf.action is defined and rule_conf.action is not none %}
+ route-map {{ name }} {{ rule_conf.action }} {{ seq }}
+{%     endif %}
+{%     if rule_conf.call is defined and rule_conf.call is not none %}
+  call {{ rule_conf.call }}
+{%     endif %}
+{%     if rule_conf.continue is defined and rule_conf.continue is not none %}
+  continue {{ rule_conf.continue }}
+{%     endif %}
+{%     if rule_conf.description is defined and rule_conf.description is not none %}
+  description {{ rule_conf.description }}
+{%     endif %}
+{%     if rule_conf.on_match is defined and rule_conf.on_match is not none %}
+  on-match {{ rule_conf.on_match }}
+{%     endif %}
+
+{%     if rule_conf.match is defined and rule_conf.match.as_path is not none %}
+  match as-path {{ rule_conf.match.as_path }}
+{%     endif %}
+
+{%     if rule_conf.set is defined and rule_conf.set is not none %}
+  set {{ rule_conf.set }}
+{%     endif %}
+
+{%   endfor %}
+{% endfor %}
