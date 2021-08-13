@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020 VyOS maintainers and contributors
+# Copyright (C) 2020-2021 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,12 +19,16 @@ import os
 from sys import exit
 
 from vyos.config import Config
+from vyos.configdict import dict_merge
 from vyos.configdict import node_changed
+from vyos.configverify import verify_interface_exists
+from vyos.ifconfig import Interface
 from vyos import ConfigError
 from vyos.util import call
 from vyos.util import dict_search
 from vyos.template import render
 from vyos.template import render_to_string
+from vyos.xml import defaults
 from vyos import frr
 from vyos import airbag
 airbag.enable()
@@ -34,10 +38,22 @@ def get_config(config=None):
         conf = config
     else:
         conf = Config()
+    base_path = ['protocols', 'isis']
     base = ['protocols', 'isis']
 
     isis = conf.get_config_dict(base, key_mangling=('-', '_'), get_first_key=True)
 
+    # We have gathered the dict representation of the CLI, but there are default
+    # options which we need to update into the dictionary retrived.
+    # XXX: Note that we can not call defaults(base), as defaults does not work
+    # on an instance of a tag node. As we use the exact same CLI definition for
+    # both the non-vrf and vrf version this is absolutely safe!
+    default_values = defaults(base_path)
+    # merge in default values
+    isis = dict_merge(default_values, isis)
+
+    from pprint import pprint
+    pprint(isis)
     return isis
 
 def verify(isis):
@@ -58,6 +74,23 @@ def verify(isis):
         # If interface not set
         if 'interface' not in isis_config:
             raise ConfigError('ISIS interface is mandatory!')
+
+        from pprint import pprint
+        pprint(isis)
+
+        for interface in isis_config['interface']:
+            verify_interface_exists(interface)
+            # Interface MTU must be >= configured lsp-mtu
+            mtu = Interface(interface).get_mtu()
+            area_mtu = int(isis_config['lsp_mtu'])
+            # Recommended maximum PDU size = interface MTU - 3 bytes
+            recom_area_mtu = mtu - 3
+            if mtu <= int(area_mtu) or int(area_mtu) > recom_area_mtu:
+                print('#' * 50, 'Im here!!!')
+                raise ConfigError(f'Interface {interface} has MTU {mtu}, ' \
+                                  f'current area MTU is {area_mtu}! \n' \
+                                  f'Recommended area lsp-mtu {recom_area_mtu} or less ' \
+                                  '(calculated on MTU size).')
 
         # If md5 and plaintext-password set at the same time
         if 'area_password' in isis_config:
@@ -100,7 +133,7 @@ def verify(isis):
                 # If segment routing global block low value is higher than the high value, throw error
                 if int(low_label_value) > int(high_label_value):
                     raise ConfigError('Segment routing global block low value must be lower than high value')
-                
+
             if dict_search('segment_routing.local_block', isis_config):
                 high_label_value = dict_search('segment_routing.local_block.high_label_value', isis_config)
                 low_label_value = dict_search('segment_routing.local_block.low_label_value', isis_config)
