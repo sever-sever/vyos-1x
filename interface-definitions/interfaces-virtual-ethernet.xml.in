@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<interfaceDefinition>
+  <node name="interfaces">
+    <children>
+      <tagNode name="virtual-ethernet" owner="${vyos_conf_scripts_dir}/interfaces-virtual-ethernet.py">
+        <properties>
+          <help>Virtual Ethernet</help>
+          <priority>321</priority>
+          <constraint>
+            <regex>^veth[0-9]+$</regex>
+          </constraint>
+          <constraintErrorMessage>Virtual Ethernet interface must be named vethN</constraintErrorMessage>
+          <valueHelp>
+            <format>vethN</format>
+            <description>Virtual Ethernet interface name</description>
+          </valueHelp>
+        </properties>
+        <children>
+          #include <include/interface/address-ipv4-ipv6-dhcp.xml.i>
+          #include <include/interface/description.xml.i>
+          #include <include/interface/disable.xml.i>
+          #include <include/interface/netns.xml.i>
+          #include <include/interface/mtu-68-16000.xml.i>
+          <leafNode name="peer">
+            <properties>
+              <help>Link to peer vethX name</help>
+            </properties>
+          </leafNode>
+        </children>
+      </tagNode>
+    </children>
+  </node>
+</interfaceDefinition>

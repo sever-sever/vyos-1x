@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<interfaceDefinition>
+  <node name="netns" owner="${vyos_conf_scripts_dir}/netns.py">
+    <properties>
+      <help>Network Namespace</help>
+      <priority>300</priority>
+    </properties>
+    <children>
+      <tagNode name="name">
+        <properties>
+          <help>Network Namespace name</help>
+        </properties>
+        <children>
+          <leafNode name="descriprion">
+            <properties>
+              <help>Namespace description</help>
+            </properties>
+          </leafNode>
+        </children>
+      </tagNode>
+    </children>
+  </node>
+</interfaceDefinition>
