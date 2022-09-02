@@ -3,7 +3,7 @@ import re
 import sys
 
 pattern = '(.*):(.*)'
-wellknown_community_set = {'local-AS',
+wellknown_community_set = {'local-as',
                            'no-advertise',
                            'no-export',
                            'internet',
