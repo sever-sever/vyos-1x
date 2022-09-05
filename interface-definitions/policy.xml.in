@@ -1181,95 +1181,154 @@
                   </leafNode>
                   <node name="community-new">
                     <properties>
-                      <help>Border Gateway Protocol (BGP) community attributes</help>
+                      <help>BGP community attribute</help>
                     </properties>
                     <children>
-                      <node name="standard">
+                      <leafNode name="add">
                         <properties>
-                          <help>Standard community attribute</help>
+                          <help>Add communities to a prefix</help>
+                          #include <include/policy/community-value-list.xml.i>
+                          <multi/>
+                          <constraint>
+                            <validator name="bgp-regular-community"/>
+                          </constraint>
                         </properties>
-                        <children>
-                          <leafNode name="add">
-                            <properties>
-                              <help>Add communities to a prefix</help>
-                              #include <include/policy/community-value-list.xml.i>
-                              <multi/>
-                              <constraint>
-                                <validator name="bgp-standard-community"/>
-                              </constraint>
-                            </properties>
-                          </leafNode>
-                          <leafNode name="set">
-                            <properties>
-                              <help>Set communities for a prefix</help>
-                              #include <include/policy/community-value-list.xml.i>
-                              <multi/>
-                              <constraint>
-                                <validator name="bgp-standard-community"/>
-                              </constraint>
-                            </properties>
-                          </leafNode>
-                          #include <include/policy/community-clear.xml.i>
-                          <leafNode name="delete">
-                            <properties>
-                              <help>Remove communities defined in a list from a prefix</help>
-                              <completionHelp>
-                                <path>policy community-list</path>
-                              </completionHelp>
-                              <valueHelp>
-                                <description>Community-list</description>
-                                <format>txt</format>
-                              </valueHelp>
-                            </properties>
-                          </leafNode>
-                        </children>
-                      </node>
-                      <node name="large">
+                      </leafNode>
+                      <leafNode name="set">
                         <properties>
-                          <help>Large community attribute</help>
+                          <help>Set communities for a prefix</help>
+                          #include <include/policy/community-value-list.xml.i>
+                          <multi/>
+                          <constraint>
+                            <validator name="bgp-regular-community"/>
+                          </constraint>
                         </properties>
-                        <children>
-                          <leafNode name="add">
-                            <properties>
-                              <help>Add large communities to a prefix ;</help>
-                              <valueHelp>
-                                <description>Community to add in format GA:LDP1:LDP2</description>
-                                <format>&lt;GA:LDP1:LDP2&gt;</format>
-                              </valueHelp>
-                              <multi/>
-                              <constraint>
-                                <validator name="bgp-large-community"/>
-                              </constraint>
-                            </properties>
-                          </leafNode>
-                          <leafNode name="set">
-                            <properties>
-                              <help>Set large communities for a prefix</help>
-                              <valueHelp>
-                                <description>Community to set in format GA:LDP1:LDP2</description>
-                                <format>&lt;GA:LDP1:LDP2&gt;</format>
-                              </valueHelp>
-                              <multi/>
-                              <constraint>
-                                <validator name="bgp-large-community"/>
-                              </constraint>
-                            </properties>
-                          </leafNode>
-                          #include <include/policy/community-clear.xml.i>
-                          <leafNode name="delete">
-                            <properties>
-                              <help>Remove communities defined in a list from a prefix</help>
-                              <completionHelp>
-                                <path>policy large-community-list</path>
-                              </completionHelp>
-                              <valueHelp>
-                                <description>Community-list</description>
-                                <format>txt</format>
-                              </valueHelp>
-                            </properties>
-                          </leafNode>
-                        </children>
-                      </node>
+                      </leafNode>
+                      #include <include/policy/community-clear.xml.i>
+                      <leafNode name="delete">
+                        <properties>
+                          <help>Remove communities defined in a list from a prefix</help>
+                          <completionHelp>
+                            <path>policy community-list</path>
+                          </completionHelp>
+                          <valueHelp>
+                            <description>Community-list</description>
+                            <format>txt</format>
+                          </valueHelp>
+                        </properties>
+                      </leafNode>
+                    </children>
+                  </node>
+                  <node name="large-community-new">
+                    <properties>
+                      <help>BGP large community attribute</help>
+                    </properties>
+                    <children>
+                      <leafNode name="add">
+                        <properties>
+                          <help>Add large communities to a prefix ;</help>
+                          <valueHelp>
+                            <description>Community to add in format GA:LDP1:LDP2</description>
+                            <format>&lt;GA:LDP1:LDP2&gt;</format>
+                          </valueHelp>
+                          <multi/>
+                          <constraint>
+                            <validator name="bgp-large-community"/>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="set">
+                        <properties>
+                          <help>Set large communities for a prefix</help>
+                          <valueHelp>
+                            <description>Community to set in format GA:LDP1:LDP2</description>
+                            <format>&lt;GA:LDP1:LDP2&gt;</format>
+                          </valueHelp>
+                          <multi/>
+                          <constraint>
+                            <validator name="bgp-large-community"/>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                      #include <include/policy/community-clear.xml.i>
+                      <leafNode name="delete">
+                        <properties>
+                          <help>Remove communities defined in a list from a prefix</help>
+                          <completionHelp>
+                            <path>policy large-community-list</path>
+                          </completionHelp>
+                          <valueHelp>
+                            <description>Community-list</description>
+                            <format>txt</format>
+                          </valueHelp>
+                        </properties>
+                      </leafNode>
+                    </children>
+                  </node>
+                  <node name="extcommunity-new">
+                    <properties>
+                      <help>BGP extended community attribute</help>
+                    </properties>
+                    <children>
+                      <leafNode name="bandwidth">
+                        <properties>
+                          <help>Bandwidth value in Mbps</help>
+                          <completionHelp>
+                            <list>cumulative num-multipaths</list>
+                          </completionHelp>
+                          <valueHelp>
+                            <format>u32:1-25600</format>
+                            <description>Bandwidth value in Mbps</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>cumulative</format>
+                            <description>Cumulative bandwidth of all multipaths (outbound-only)</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>num-multipaths</format>
+                            <description>Internally computed bandwidth based on number of multipaths (outbound-only)</description>
+                          </valueHelp>
+                          <constraint>
+                            <validator name="numeric" argument="--range 1-25600"/>
+                            <regex>(cumulative|num-multipaths)</regex>
+                          </constraint>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="rt">
+                        <properties>
+                          <help>Set route target value</help>
+                          <valueHelp>
+                            <format>ASN:NN</format>
+                            <description>based on autonomous system number</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>IP:NN</format>
+                            <description>Based on a router-id IP address</description>
+                          </valueHelp>
+                          <constraint>
+                            <validator name="bgp-extended-community"/>
+                          </constraint>
+                          <constraintErrorMessage>Should be in form: ASN:NN or IPADDR:NN where ASN is autonomous system number</constraintErrorMessage>
+                        </properties>
+                      </leafNode>
+                      <leafNode name="soo">
+                        <properties>
+                          <help>Set Site of Origin value</help>
+                          <valueHelp>
+                            <format>ASN:NN</format>
+                            <description>based on autonomous system number</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>IP:NN</format>
+                            <description>Based on a router-id IP address</description>
+                          </valueHelp>
+                          <constraint>
+                            <validator name="bgp-extended-community"/>
+                          </constraint>
+                          <constraintErrorMessage>Should be in form: ASN:NN or IPADDR:NN where ASN is autonomous system number</constraintErrorMessage>
+                        </properties>
+                      </leafNode>
+                      #include <include/policy/community-clear.xml.i>
                     </children>
                   </node>
                   <leafNode name="distance">
