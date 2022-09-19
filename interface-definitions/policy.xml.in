@@ -1118,68 +1118,7 @@
                       <valueless/>
                     </properties>
                   </leafNode>
-                  <node name="comm-list">
-                    <properties>
-                      <help>BGP communities matching a community-list</help>
-                    </properties>
-                    <children>
-                      <leafNode name="comm-list">
-                        <properties>
-                          <help>BGP communities with a community-list</help>
-                          <completionHelp>
-                            <path>policy community-list</path>
-                          </completionHelp>
-                          <valueHelp>
-                            <format>txt</format>
-                            <description>BGP communities with a community-list</description>
-                          </valueHelp>
-                        </properties>
-                      </leafNode>
-                      <leafNode name="delete">
-                        <properties>
-                          <help>Delete BGP communities matching the community-list</help>
-                          <valueless/>
-                        </properties>
-                      </leafNode>
-                    </children>
-                  </node>
-                  <leafNode name="community">
-                    <properties>
-                      <help>Border Gateway Protocl (BGP) community attribute</help>
-                      <completionHelp>
-                        <list>local-AS no-advertise no-export internet additive none</list>
-                      </completionHelp>
-                      <valueHelp>
-                        <format>&lt;aa:nn&gt;</format>
-                        <description>Community number in AA:NN format</description>
-                      </valueHelp>
-                      <valueHelp>
-                        <format>local-AS</format>
-                        <description>Well-known communities value NO_EXPORT_SUBCONFED 0xFFFFFF03</description>
-                      </valueHelp>
-                      <valueHelp>
-                        <format>no-advertise</format>
-                        <description>Well-known communities value NO_ADVERTISE 0xFFFFFF02</description>
-                      </valueHelp>
-                      <valueHelp>
-                        <format>no-export</format>
-                        <description>Well-known communities value NO_EXPORT 0xFFFFFF01</description>
-                      </valueHelp>
-                      <valueHelp>
-                        <format>internet</format>
-                        <description>Well-known communities value 0</description>
-                      </valueHelp>
-                      <valueHelp>
-                        <format>additive</format>
-                        <description>New value is appended to the existing value</description>
-                      </valueHelp>
-                      <valueHelp>
-                        <format>none</format>
-                        <description>No community attribute</description>
-                      </valueHelp>
-                    </properties>
-                  </leafNode>
-                  <node name="community-new">
+                  <node name="community">
                     <properties>
                       <help>BGP community attribute</help>
                     </properties>
@@ -1188,20 +1127,12 @@
                         <properties>
                           <help>Add communities to a prefix</help>
                           #include <include/policy/community-value-list.xml.i>
-                          <multi/>
-                          <constraint>
-                            <validator name="bgp-regular-community"/>
-                          </constraint>
                         </properties>
                       </leafNode>
-                      <leafNode name="set">
+                      <leafNode name="replace">
                         <properties>
                           <help>Set communities for a prefix</help>
                           #include <include/policy/community-value-list.xml.i>
-                          <multi/>
-                          <constraint>
-                            <validator name="bgp-regular-community"/>
-                          </constraint>
                         </properties>
                       </leafNode>
                       #include <include/policy/community-clear.xml.i>
@@ -1219,7 +1150,7 @@
                       </leafNode>
                     </children>
                   </node>
-                  <node name="large-community-new">
+                  <node name="large-community">
                     <properties>
                       <help>BGP large community attribute</help>
                     </properties>
@@ -1227,27 +1158,13 @@
                       <leafNode name="add">
                         <properties>
                           <help>Add large communities to a prefix ;</help>
-                          <valueHelp>
-                            <description>Community to add in format GA:LDP1:LDP2</description>
-                            <format>&lt;GA:LDP1:LDP2&gt;</format>
-                          </valueHelp>
-                          <multi/>
-                          <constraint>
-                            <validator name="bgp-large-community"/>
-                          </constraint>
+                          #include <include/policy/large-community-value-list.xml.i>
                         </properties>
                       </leafNode>
-                      <leafNode name="set">
+                      <leafNode name="replace">
                         <properties>
                           <help>Set large communities for a prefix</help>
-                          <valueHelp>
-                            <description>Community to set in format GA:LDP1:LDP2</description>
-                            <format>&lt;GA:LDP1:LDP2&gt;</format>
-                          </valueHelp>
-                          <multi/>
-                          <constraint>
-                            <validator name="bgp-large-community"/>
-                          </constraint>
+                          #include <include/policy/large-community-value-list.xml.i>
                         </properties>
                       </leafNode>
                       #include <include/policy/community-clear.xml.i>
@@ -1265,7 +1182,7 @@
                       </leafNode>
                     </children>
                   </node>
-                  <node name="extcommunity-new">
+                  <node name="extcommunity">
                     <properties>
                       <help>BGP extended community attribute</help>
                     </properties>
@@ -1294,38 +1211,22 @@
                           </constraint>
                         </properties>
                       </leafNode>
+                      <leafNode name="bandwidth-non-transitive">
+                        <properties>
+                          <help>The link bandwidth extended community is encoded as non-transitive</help>
+                          <valueless/>
+                        </properties>
+                      </leafNode>
                       <leafNode name="rt">
                         <properties>
                           <help>Set route target value</help>
-                          <valueHelp>
-                            <format>ASN:NN</format>
-                            <description>based on autonomous system number</description>
-                          </valueHelp>
-                          <valueHelp>
-                            <format>IP:NN</format>
-                            <description>Based on a router-id IP address</description>
-                          </valueHelp>
-                          <constraint>
-                            <validator name="bgp-extended-community"/>
-                          </constraint>
-                          <constraintErrorMessage>Should be in form: ASN:NN or IPADDR:NN where ASN is autonomous system number</constraintErrorMessage>
+                          #include <include/policy/extended-community-value-list.xml.i>
                         </properties>
                       </leafNode>
                       <leafNode name="soo">
                         <properties>
                           <help>Set Site of Origin value</help>
-                          <valueHelp>
-                            <format>ASN:NN</format>
-                            <description>based on autonomous system number</description>
-                          </valueHelp>
-                          <valueHelp>
-                            <format>IP:NN</format>
-                            <description>Based on a router-id IP address</description>
-                          </valueHelp>
-                          <constraint>
-                            <validator name="bgp-extended-community"/>
-                          </constraint>
-                          <constraintErrorMessage>Should be in form: ASN:NN or IPADDR:NN where ASN is autonomous system number</constraintErrorMessage>
+                          #include <include/policy/extended-community-value-list.xml.i>
                         </properties>
                       </leafNode>
                       #include <include/policy/community-clear.xml.i>
@@ -1379,71 +1280,6 @@
                           </leafNode>
                         </children>
                       </node>
-                    </children>
-                  </node>
-                  <node name="extcommunity">
-                    <properties>
-                      <help>BGP extended community attribute</help>
-                    </properties>
-                    <children>
-                      <leafNode name="bandwidth">
-                        <properties>
-                          <help>Bandwidth value in Mbps</help>
-                          <completionHelp>
-                            <list>cumulative num-multipaths</list>
-                          </completionHelp>
-                          <valueHelp>
-                            <format>u32:1-25600</format>
-                            <description>Bandwidth value in Mbps</description>
-                          </valueHelp>
-                          <valueHelp>
-                            <format>cumulative</format>
-                            <description>Cumulative bandwidth of all multipaths (outbound-only)</description>
-                          </valueHelp>
-                          <valueHelp>
-                            <format>num-multipaths</format>
-                            <description>Internally computed bandwidth based on number of multipaths (outbound-only)</description>
-                          </valueHelp>
-                          <constraint>
-                            <validator name="numeric" argument="--range 1-25600"/>
-                            <regex>(cumulative|num-multipaths)</regex>
-                          </constraint>
-                        </properties>
-                      </leafNode>
-                      <leafNode name="rt">
-                        <properties>
-                          <help>Set route target value</help>
-                          <valueHelp>
-                            <format>ASN:NN</format>
-                            <description>based on autonomous system number</description>
-                          </valueHelp>
-                          <valueHelp>
-                            <format>IP:NN</format>
-                            <description>Based on a router-id IP address</description>
-                          </valueHelp>
-                          <constraint>
-                            <regex>(((\b(?:(?:2(?:[0-4][0-9]|5[0-5])|[0-1]?[0-9]?[0-9])\.){3}(?:(?:2([0-4][0-9]|5[0-5])|[0-1]?[0-9]?[0-9]))\b)|(\d+)):(\d+) ?)+</regex>
-                          </constraint>
-                          <constraintErrorMessage>Should be in form: ASN:NN or IPADDR:NN where ASN is autonomous system number</constraintErrorMessage>
-                        </properties>
-                      </leafNode>
-                      <leafNode name="soo">
-                        <properties>
-                          <help>Set Site of Origin value</help>
-                          <valueHelp>
-                            <format>ASN:NN</format>
-                            <description>based on autonomous system number</description>
-                          </valueHelp>
-                          <valueHelp>
-                            <format>IP:NN</format>
-                            <description>Based on a router-id IP address</description>
-                          </valueHelp>
-                          <constraint>
-                            <regex>((?:[0-9]{1,3}\.){3}[0-9]{1,3}|\d+):\d+</regex>
-                          </constraint>
-                          <constraintErrorMessage>Should be in form: ASN:NN or IPADDR:NN where ASN is autonomous system number</constraintErrorMessage>
-                        </properties>
-                      </leafNode>
                     </children>
                   </node>
                   <leafNode name="ip-next-hop">
@@ -1520,30 +1356,6 @@
                       </leafNode>
                     </children>
                   </node>
-                  <leafNode name="large-community">
-                    <properties>
-                      <help>Set BGP large community value</help>
-                      <valueHelp>
-                        <format>txt</format>
-                        <description>ASN:nn:mm BGP large community</description>
-                      </valueHelp>
-                      <completionHelp>
-                        <path>policy large-community-list</path>
-                      </completionHelp>
-                    </properties>
-                  </leafNode>
-                  <leafNode name="large-comm-list-delete">
-                    <properties>
-                      <help>Delete BGP communities matching the large community-list</help>
-                      <completionHelp>
-                        <path>policy large-community-list</path>
-                      </completionHelp>
-                      <valueHelp>
-                        <format>txt</format>
-                        <description>BGP large community-list</description>
-                      </valueHelp>
-                    </properties>
-                  </leafNode>
                   <leafNode name="local-preference">
                     <properties>
                       <help>BGP local preference attribute</help>

@@ -1,41 +1,48 @@
 #!/usr/bin/env python3
-import re
-import sys
 
-pattern = '(.*):(.*)'
-wellknown_community_set = {'local-as',
-                           'no-advertise',
-                           'no-export',
-                           'internet',
-                           'graceful-shutdown',
-                           'accept-own',
-                           'route-filter-translated-v4',
-                           'route-filter-v4',
-                           'route-filter-translated-v6',
-                           'route-filter-v6',
-                           'llgr-stale',
-                           'no-llgr',
-                           'accept-own-nexthop',
-                           'blackhole',
-                           'no-peer'}
+# Copyright 2019-2022 VyOS maintainers and contributors <maintainers@vyos.io>
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library.  If not, see <http://www.gnu.org/licenses/>.
+
+from argparse import ArgumentParser
+from sys import exit
+
+from vyos.template import is_ipv4
+
+COMM_MAX_2_OCTET: int = 65535
+
 if __name__ == '__main__':
-    max_community = 65535
-    min_community = 0
-    if len(sys.argv) != 2:
-        sys.exit(1)
-    if sys.argv[1] in wellknown_community_set:
-        sys.exit(0)
-    if not re.match(pattern, sys.argv[1]):
-        sys.exit(1)
-    value = sys.argv[1].split(':')
-    if not len(value) == 2:
-        sys.exit(1)
+    # add an argument with community
+    parser: ArgumentParser = ArgumentParser()
+    parser.add_argument('community', type=str)
+    args = parser.parse_args()
+    community: str = args.community
 
-    if (not value[0].isdigit()) or (not value[1].isdigit()):
-        sys.exit(1)
-    if int(value[0]) > max_community or int(value[0]) < min_community:
-        exit(1)
-    if int(value[1]) > max_community or int(value[1]) < min_community:
+    try:
+        # try to extract community parts from an argument
+        comm_left: int = int(community.split(':')[0])
+        comm_right: int = int(community.split(':')[1])
+
+        # check compatibilities of left and right parts
+        if 0 <= comm_left <= COMM_MAX_2_OCTET \
+                and 0 <= comm_right <= COMM_MAX_2_OCTET:
+            exit(0)
+    except Exception:
+        # fail if something was wrong
+        print("Invalid community format")
         exit(1)
 
-    sys.exit(0)
+    # fail if none of validators catched the value
+    print("Invalid community format")
+    exit(1)

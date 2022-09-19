@@ -1,5 +1,5 @@
 <!-- include start from policy/community-clear.xml.i -->
-<leafNode name="clear">
+<leafNode name="none">
   <properties>
     <help>Completely remove communities attribute from a prefix</help>
     <valueless/>

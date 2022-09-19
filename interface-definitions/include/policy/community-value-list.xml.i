@@ -20,7 +20,7 @@
 </completionHelp>
 <valueHelp>
     <format>&lt;AS:VAL&gt;</format>
-    <description>Community number in AS:VAL format</description>
+    <description>Community number in &lt;0-65535:0-65535&gt; format</description>
 </valueHelp>
 <valueHelp>
     <format>local-as</format>
@@ -82,4 +82,9 @@
     <format>no-peer</format>
     <description>Well-known communities value NOPEER 0xFFFFFF04</description>
 </valueHelp>
+<multi/>
+<constraint>
+    <regex>local-as|no-advertise|no-export|internet|graceful-shutdown|accept-own|route-filter-translated-v4|route-filter-v4|route-filter-translated-v6|route-filter-v6|llgr-stale|no-llgr|accept-own-nexthop|blackhole|no-peer</regex>
+    <validator name="bgp-regular-community"/>
+</constraint>
         <!-- include end -->
