@@ -1,34 +1,8 @@
 ---
-python/**:
-  - c-po
-  - dmbaturin
-  - jestabro
-
-interface-definitions/**:
-  - c-po
-  - DmitriyEshenko
-  - dmbaturin
-  - jestabro
-  - sever-sever
-  - zdc
-
-op-mode-definitions/**:
-  - c-po
-  - DmitriyEshenko
-  - dmbaturin
-  - jestabro
-  - sever-sever
-  - zdc
-
-src/**:
-  - c-po
-  - DmitriyEshenko
-  - dmbaturin
-  - jestabro
-  - sever-sever
-  - zdc
-
-.github/**:
-  - c-po
+"**/*":
   - dmbaturin
   - UnicronNL
+  - zdc
+  - jestabro
+  - sever-sever
+  - c-po

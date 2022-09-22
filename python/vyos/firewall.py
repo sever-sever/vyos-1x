@@ -52,9 +52,9 @@ def get_ips_domains_dict(list_domains):
 
     return ip_dict
 
-def nft_init_set(group_name, table="filter", family="ip"):
+def nft_init_set(group_name, table="vyos_filter", family="ip"):
     """
-    table ip filter {
+    table ip vyos_filter {
         set GROUP_NAME
             type ipv4_addr
            flags interval
@@ -63,9 +63,9 @@ def nft_init_set(group_name, table="filter", family="ip"):
     return call(f'nft add set ip {table} {group_name} {{ type ipv4_addr\\; flags interval\\; }}')
 
 
-def nft_add_set_elements(group_name, elements, table="filter", family="ip"):
+def nft_add_set_elements(group_name, elements, table="vyos_filter", family="ip"):
     """
-    table ip filter {
+    table ip vyos_filter {
         set GROUP_NAME {
             type ipv4_addr
             flags interval
@@ -75,18 +75,18 @@ def nft_add_set_elements(group_name, elements, table="filter", family="ip"):
     elements = ", ".join(elements)
     return call(f'nft add element {family} {table} {group_name} {{ {elements} }} ')
 
-def nft_flush_set(group_name, table="filter", family="ip"):
+def nft_flush_set(group_name, table="vyos_filter", family="ip"):
     """
     Flush elements of nft set
     """
     return call(f'nft flush set {family} {table} {group_name}')
 
-def nft_update_set_elements(group_name, elements, table="filter", family="ip"):
+def nft_update_set_elements(group_name, elements, table="vyos_filter", family="ip"):
     """
     Update elements of nft set
     """
-    flush_set = nft_flush_set(group_name, table="filter", family="ip")
-    nft_add_set = nft_add_set_elements(group_name, elements, table="filter", family="ip")
+    flush_set = nft_flush_set(group_name, table="vyos_filter", family="ip")
+    nft_add_set = nft_add_set_elements(group_name, elements, table="vyos_filter", family="ip")
     return flush_set, nft_add_set
 
 # END firewall group domain-group (sets)
@@ -150,7 +150,7 @@ def parse_rule(rule_conf, fw_name, rule_id, ip_name):
                 if suffix[0] == '!':
                     suffix = f'!= {suffix[1:]}'
                 output.append(f'{ip_name} {prefix}addr {suffix}')
-            
+
             if dict_search_args(side_conf, 'geoip', 'country_code'):
                 operator = ''
                 if dict_search_args(side_conf, 'geoip', 'inverse_match') != None:
@@ -265,6 +265,23 @@ def parse_rule(rule_conf, fw_name, rule_id, ip_name):
                 if 'type' in rule_conf[icmp]:
                     output.append(icmp + ' type ' + rule_conf[icmp]['type'])
 
+
+    if 'packet_length' in rule_conf:
+        lengths_str = ','.join(rule_conf['packet_length'])
+        output.append(f'ip{def_suffix} length {{{lengths_str}}}')
+
+    if 'packet_length_exclude' in rule_conf:
+        negated_lengths_str = ','.join(rule_conf['packet_length_exclude'])
+        output.append(f'ip{def_suffix} length != {{{negated_lengths_str}}}')
+
+    if 'dscp' in rule_conf:
+        dscp_str = ','.join(rule_conf['dscp'])
+        output.append(f'ip{def_suffix} dscp {{{dscp_str}}}')
+
+    if 'dscp_exclude' in rule_conf:
+        negated_dscp_str = ','.join(rule_conf['dscp_exclude'])
+        output.append(f'ip{def_suffix} dscp != {{{negated_dscp_str}}}')
+
     if 'ipsec' in rule_conf:
         if 'match_ipsec' in rule_conf['ipsec']:
             output.append('meta ipsec == 1')
@@ -309,6 +326,10 @@ def parse_rule(rule_conf, fw_name, rule_id, ip_name):
 
     if 'action' in rule_conf:
         output.append(nft_action(rule_conf['action']))
+        if 'jump' in rule_conf['action']:
+            target = rule_conf['jump_target']
+            output.append(f'NAME{def_suffix}_{target}')
+
     else:
         output.append('return')
 

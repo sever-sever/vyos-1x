@@ -45,6 +45,7 @@ else:
     k_mod = ['nft_nat', 'nft_chain_nat_ipv4']
 
 nftables_nat_config = '/run/nftables_nat.conf'
+nftables_static_nat_conf = '/run/nftables_static-nat-rules.nft'
 
 def get_handler(json, chain, target):
     """ Get nftable rule handler number of given chain/target combination.
@@ -88,7 +89,7 @@ def get_config(config=None):
 
     # T2665: we must add the tagNode defaults individually until this is
     # moved to the base class
-    for direction in ['source', 'destination']:
+    for direction in ['source', 'destination', 'static']:
         if direction in nat:
             default_values = defaults(base + [direction, 'rule'])
             for rule in dict_search(f'{direction}.rule', nat) or []:
@@ -146,14 +147,10 @@ def verify(nat):
                 Warning(f'rule "{rule}" interface "{config["outbound_interface"]}" does not exist on this system')
 
             addr = dict_search('translation.address', config)
-            if addr != None:
-                if addr != 'masquerade' and not is_ip_network(addr):
-                    for ip in addr.split('-'):
-                        if not is_addr_assigned(ip):
-                            Warning(f'IP address {ip} does not exist on the system!')
-            elif 'exclude' not in config:
-                raise ConfigError(f'{err_msg}\n' \
-                                  'translation address not specified')
+            if addr != None and addr != 'masquerade' and not is_ip_network(addr):
+                for ip in addr.split('-'):
+                    if not is_addr_assigned(ip):
+                        Warning(f'IP address {ip} does not exist on the system!')
 
             # common rule verification
             verify_rule(config, err_msg)
@@ -166,14 +163,19 @@ def verify(nat):
             if 'inbound_interface' not in config:
                 raise ConfigError(f'{err_msg}\n' \
                                   'inbound-interface not specified')
-            else:
-                if config['inbound_interface'] not in 'any' and config['inbound_interface'] not in interfaces():
-                    Warning(f'rule "{rule}" interface "{config["inbound_interface"]}" does not exist on this system')
+            elif config['inbound_interface'] not in 'any' and config['inbound_interface'] not in interfaces():
+                Warning(f'rule "{rule}" interface "{config["inbound_interface"]}" does not exist on this system')
 
+            # common rule verification
+            verify_rule(config, err_msg)
 
-            if dict_search('translation.address', config) == None and 'exclude' not in config:
+    if dict_search('static.rule', nat):
+        for rule, config in dict_search('static.rule', nat).items():
+            err_msg = f'Static NAT configuration error in rule {rule}:'
+
+            if 'inbound_interface' not in config:
                 raise ConfigError(f'{err_msg}\n' \
-                                  'translation address not specified')
+                                  'inbound-interface not specified')
 
             # common rule verification
             verify_rule(config, err_msg)
@@ -181,10 +183,18 @@ def verify(nat):
     return None
 
 def generate(nat):
+    if not os.path.exists(nftables_nat_config):
+        nat['first_install'] = True
+
     render(nftables_nat_config, 'firewall/nftables-nat.j2', nat)
+    render(nftables_static_nat_conf, 'firewall/nftables-static-nat.j2', nat)
 
     # dry-run newly generated configuration
     tmp = run(f'nft -c -f {nftables_nat_config}')
+    if tmp > 0:
+        raise ConfigError('Configuration file errors encountered!')
+
+    tmp = run(f'nft -c -f {nftables_static_nat_conf}')
     if tmp > 0:
         raise ConfigError('Configuration file errors encountered!')
 
@@ -192,6 +202,7 @@ def generate(nat):
 
 def apply(nat):
     cmd(f'nft -f {nftables_nat_config}')
+    cmd(f'nft -f {nftables_static_nat_conf}')
 
     return None
 
