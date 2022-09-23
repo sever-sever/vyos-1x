@@ -1062,7 +1062,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                     if 'ip-next-hop' in rule_config['set']:
                         self.cli_set(path + ['rule', rule, 'set', 'ip-next-hop', rule_config['set']['ip-next-hop']])
                     if 'large-community' in rule_config['set']:
-                        self.cli_set(path + ['rule', rule, 'set', 'large-community', rule_config['set']['large-community']])
+                        self.cli_set(path + ['rule', rule, 'set', 'large-community', 'replace', rule_config['set']['large-community']])
                     if 'local-preference' in rule_config['set']:
                         self.cli_set(path + ['rule', rule, 'set', 'local-preference', rule_config['set']['local-preference']])
                     if 'metric' in rule_config['set']:
