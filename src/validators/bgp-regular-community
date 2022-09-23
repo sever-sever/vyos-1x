@@ -28,7 +28,9 @@ if __name__ == '__main__':
     parser.add_argument('community', type=str)
     args = parser.parse_args()
     community: str = args.community
-
+    if community.count(':') != 1:
+        print("Invalid community format")
+        exit(1)
     try:
         # try to extract community parts from an argument
         comm_left: int = int(community.split(':')[0])
