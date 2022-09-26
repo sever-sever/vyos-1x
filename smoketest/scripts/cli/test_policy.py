@@ -862,6 +862,19 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                             'weight'                  : '2',
                         },
                     },
+                    '20' : {
+                        'action' : 'permit',
+                        'set' : {
+                            'community-one'   : '65001:1',
+                            'community-two'   : '65002:2'
+                        },
+                    },
+                    '30' : {
+                        'action': 'permit',
+                        'set': {
+                            'community-replace': '65001:3'
+                        },
+                    },
                 },
             },
             'bandwidth-configuration' : {
@@ -1047,6 +1060,14 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                         self.cli_set(path + ['rule', rule, 'set', 'as-path', 'prepend', rule_config['set']['as-path-prepend']])
                     if 'atomic-aggregate' in rule_config['set']:
                         self.cli_set(path + ['rule', rule, 'set', 'atomic-aggregate'])
+                    if rule_config.get('community'):
+                        if 'add' in rule_config['set']['community']:
+                            self.cli_set(path + ['rule', rule, 'set', 'community', 'add', rule_config['set']['community-one']])
+                            self.cli_set(path + ['rule', rule, 'set', 'community', 'add', rule_config['set']['community-two']])
+                        if 'replace' in rule_config['set']['community']:
+                            self.cli_set(path + ['rule', rule, 'set', 'community', 'add', rule_config['set']['community-replace']])
+                        if 'none' in rule_config['set']['community']:
+                            self.cli_set(path + ['rule', rule, 'set', 'community', 'none'])
                     if 'distance' in rule_config['set']:
                         self.cli_set(path + ['rule', rule, 'set', 'distance', rule_config['set']['distance']])
                     if 'extcommunity-bw' in rule_config['set']:
@@ -1234,6 +1255,14 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                         tmp += 'as-path prepend last-as' + rule_config['set']['as-path-prepend-last-as']
                     elif 'atomic-aggregate' in rule_config['set']:
                         tmp += 'atomic-aggregate'
+                    elif rule_config.get('set'):
+                        if 'add' in rule_config['set']['community']:
+                            tmp += 'community' + rule_config['set']['community-one']
+                            tmp += 'community' + rule_config['set']['community-two']
+                        if 'replace' in rule_config['set']['community']:
+                            tmp += 'community' + rule_config['set']['community-replace']
+                        if 'none' in rule_config['set']['community']:
+                            tmp += 'community none'
                     elif 'distance' in rule_config['set']:
                         tmp += 'distance ' + rule_config['set']['distance']
                     elif 'extcommunity-bw' in rule_config['set']:
