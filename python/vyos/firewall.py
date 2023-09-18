@@ -48,7 +48,6 @@ def fqdn_config_parse(firewall):
         rule = path[4]
         suffix = path[5][0]
         set_name = f'{hook_name}_{priority}_{rule}_{suffix}'
-            
         if (path[0] == 'ipv4') and (path[1] == 'forward' or path[1] == 'input' or path[1] == 'output' or path[1] == 'name'):
             firewall['ip_fqdn'][set_name] = domain
         elif (path[0] == 'ipv6') and (path[1] == 'forward' or path[1] == 'input' or path[1] == 'output' or path[1] == 'name'):
@@ -249,6 +248,10 @@ def parse_rule(rule_conf, hook, fw_name, rule_id, ip_name):
 
                     output.append(f'{proto} {prefix}port {operator} @P_{group_name}')
 
+    if rule_conf['action'] == 'synproxy':
+        if 'synproxy' in rule_conf:
+            output.append('ct state invalid,untracked')
+
     if 'log' in rule_conf and rule_conf['log'] == 'enable':
         action = rule_conf['action'] if 'action' in rule_conf else 'accept'
         #output.append(f'log prefix "[{fw_name[:19]}-{rule_id}-{action[:1].upper()}]"')
@@ -415,6 +418,15 @@ def parse_rule(rule_conf, hook, fw_name, rule_id, ip_name):
             if 'queue_options' in rule_conf:
                 queue_opts = ','.join(rule_conf['queue_options'])
                 output.append(f'{queue_opts}')
+
+        # Synproxy
+        if 'synproxy' in rule_conf:
+            synproxy_mss = dict_search_args(rule_conf, 'synproxy', 'tcp', 'mss')
+            if synproxy_mss:
+                output.append(f'mss {synproxy_mss}')
+            synproxy_ws = dict_search_args(rule_conf, 'synproxy', 'tcp', 'window_scale')
+            if synproxy_ws:
+                output.append(f'wscale {synproxy_ws} timestamp sack-perm')
 
     else:
         output.append('return')
