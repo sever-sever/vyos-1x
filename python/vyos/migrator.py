@@ -1,4 +1,4 @@
-# Copyright 2019 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright 2019-2022 VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -15,23 +15,38 @@
 
 import sys
 import os
-import subprocess
-import vyos.version
+import json
+import logging
+
 import vyos.defaults
-import vyos.systemversions as systemversions
-import vyos.formatversions as formatversions
+import vyos.component_version as component_version
+from vyos.utils.process import cmd
+
+log_file = os.path.join(vyos.defaults.directories['config'], 'vyos-migrate.log')
 
 class MigratorError(Exception):
     pass
 
 class Migrator(object):
-    def __init__(self, config_file, force=False, set_vintage=None):
+    def __init__(self, config_file, force=False, set_vintage='vyos'):
         self._config_file = config_file
         self._force = force
         self._set_vintage = set_vintage
         self._config_file_vintage = None
-        self._log_file = None
         self._changed = False
+
+    def init_logger(self):
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+
+        # on adding the file handler, allow write permission for cfg_group;
+        # restore original umask on exit
+        mask = os.umask(0o113)
+        fh = logging.FileHandler(log_file)
+        formatter = logging.Formatter('%(message)s')
+        fh.setFormatter(formatter)
+        self.logger.addHandler(fh)
+        os.umask(mask)
 
     def read_config_file_versions(self):
         """
@@ -41,13 +56,13 @@ class Migrator(object):
         cfg_file = self._config_file
         component_versions = {}
 
-        cfg_versions = formatversions.read_vyatta_versions(cfg_file)
+        cfg_versions = component_version.from_file(cfg_file, vintage='vyatta')
 
         if cfg_versions:
             self._config_file_vintage = 'vyatta'
             component_versions = cfg_versions
 
-        cfg_versions = formatversions.read_vyos_versions(cfg_file)
+        cfg_versions = component_version.from_file(cfg_file, vintage='vyos')
 
         if cfg_versions:
             self._config_file_vintage = 'vyos'
@@ -61,9 +76,6 @@ class Migrator(object):
         if self._set_vintage:
             self._config_file_vintage = self._set_vintage
 
-        if not self._config_file_vintage:
-            self._config_file_vintage = vyos.defaults.cfg_vintage
-
         if self._config_file_vintage not in ['vyatta', 'vyos']:
             raise MigratorError("Unknown vintage.")
 
@@ -72,40 +84,26 @@ class Migrator(object):
         else:
             return True
 
-    def open_log_file(self):
-        """
-        Open log file for migration, catching any error.
-        Note that, on boot, migration takes place before the canonical log
-        directory is created, hence write to the config file directory.
-        """
-        self._log_file = os.path.join(vyos.defaults.directories['config'],
-                                      'vyos-migrate.log')
-        # on creation, allow write permission for cfg_group;
-        # restore original umask on exit
-        mask = os.umask(0o113)
-        try:
-            log = open('{0}'.format(self._log_file), 'w')
-            log.write("List of executed migration scripts:\n")
-        except Exception as e:
-            os.umask(mask)
-            print("Logging error: {0}".format(e))
-            return None
-
-        os.umask(mask)
-        return log
-
     def run_migration_scripts(self, config_file_versions, system_versions):
         """
         Run migration scripts iteratively, until config file version equals
         system component version.
         """
-        log = self.open_log_file()
+        os.environ['VYOS_MIGRATION'] = '1'
+        self.init_logger()
+
+        self.logger.info("List of executed migration scripts:")
 
         cfg_versions = config_file_versions
         sys_versions = system_versions
 
         sys_keys = list(sys_versions.keys())
         sys_keys.sort()
+
+        # XXX 'bgp' needs to follow 'quagga':
+        if 'bgp' in sys_keys and 'quagga' in sys_keys:
+            sys_keys.insert(sys_keys.index('quagga'),
+                            sys_keys.pop(sys_keys.index('bgp')))
 
         rev_versions = {}
 
@@ -126,8 +124,9 @@ class Migrator(object):
                         '{}-to-{}'.format(cfg_ver, next_ver))
 
                 try:
-                    subprocess.check_call([migrate_script,
-                        self._config_file])
+                    out = cmd([migrate_script, self._config_file])
+                    self.logger.info(f'{migrate_script}')
+                    if out: self.logger.info(out)
                 except FileNotFoundError:
                     pass
                 except Exception as err:
@@ -135,38 +134,39 @@ class Migrator(object):
                           "".format(migrate_script, err))
                     sys.exit(1)
 
-                if log:
-                    try:
-                        log.write('{0}\n'.format(migrate_script))
-                    except Exception as e:
-                        print("Error writing log: {0}".format(e))
-
                 cfg_ver = next_ver
-
             rev_versions[key] = cfg_ver
 
-        if log:
-            log.close()
-
+        del os.environ['VYOS_MIGRATION']
         return rev_versions
 
     def write_config_file_versions(self, cfg_versions):
         """
         Write new versions string.
         """
-        versions_string = formatversions.format_versions_string(cfg_versions)
-
-        os_version_string = vyos.version.get_version()
-
         if self._config_file_vintage == 'vyatta':
-            formatversions.write_vyatta_versions_foot(self._config_file,
-                                                      versions_string,
-                                                      os_version_string)
+            component_version.write_version_footer(cfg_versions,
+                                                   self._config_file,
+                                                   vintage='vyatta')
 
         if self._config_file_vintage == 'vyos':
-            formatversions.write_vyos_versions_foot(self._config_file,
-                                                    versions_string,
-                                                    os_version_string)
+            component_version.write_version_footer(cfg_versions,
+                                                   self._config_file,
+                                                   vintage='vyos')
+
+    def save_json_record(self, component_versions: dict):
+        """
+        Write component versions to a json file
+        """
+        mask = os.umask(0o113)
+        version_file = vyos.defaults.component_version_json
+        try:
+            with open(version_file, 'w') as f:
+                f.write(json.dumps(component_versions, indent=2, sort_keys=True))
+        except OSError:
+            pass
+        finally:
+            os.umask(mask)
 
     def run(self):
         """
@@ -183,7 +183,10 @@ class Migrator(object):
             # This will force calling all migration scripts:
             cfg_versions = {}
 
-        sys_versions = systemversions.get_system_versions()
+        sys_versions = component_version.from_system()
+
+        # save system component versions in json file for easy reference
+        self.save_json_record(sys_versions)
 
         rev_versions = self.run_migration_scripts(cfg_versions, sys_versions)
 
@@ -196,7 +199,7 @@ class Migrator(object):
         if not self._changed:
             return
 
-        formatversions.remove_versions(cfg_file)
+        component_version.remove_footer(cfg_file)
 
         self.write_config_file_versions(rev_versions)
 
@@ -204,16 +207,12 @@ class Migrator(object):
         return self._changed
 
 class VirtualMigrator(Migrator):
-    def __init__(self, config_file, vintage='vyos'):
-        super().__init__(config_file, set_vintage = vintage)
-
     def run(self):
         cfg_file = self._config_file
 
         cfg_versions = self.read_config_file_versions()
         if not cfg_versions:
-            raise MigratorError("Config file has no version information;"
-                                " virtual migration not possible.")
+            return
 
         if self.update_vintage():
             self._changed = True
@@ -221,7 +220,7 @@ class VirtualMigrator(Migrator):
         if not self._changed:
             return
 
-        formatversions.remove_versions(cfg_file)
+        component_version.remove_footer(cfg_file)
 
         self.write_config_file_versions(cfg_versions)
 

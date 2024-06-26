@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019 VyOS maintainers and contributors
+# Copyright (C) 2022-2023 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -14,72 +14,48 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-# import os
 import sys
-import subprocess
-import argparse
-#import re
+import typing
 
-pptp_cmd = ["/usr/bin/accel-cmd", "-p 2003"]
-l2tp_cmd = ["/usr/bin/accel-cmd", "-p 2004"]
+from vyos.utils.process import run
 
-def terminate_sessions(username='', interface='', protocol=''):
-    if username:
-        if username == "all_users":
-            if protocol == "pptp":
-                pptp_cmd.append("terminate all")
-                subprocess.call(pptp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return
-            elif protocol == "l2tp":
-                l2tp_cmd.append("terminate all")
-                subprocess.call(l2tp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return
-            else:
-                pptp_cmd.append("terminate all")
-                subprocess.call(pptp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                l2tp_cmd.append("terminate all")
-                subprocess.call(l2tp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return
+import vyos.opmode
 
-        if protocol == "pptp":
-            pptp_cmd.append("terminate username {0}".format(username))
-            subprocess.call(pptp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+cmd_dict = {
+    'cmd_base': '/usr/bin/accel-cmd -p {} terminate {} {}',
+    'vpn_types': {
+        'pptp': 2003,
+        'l2tp': 2004,
+        'sstp': 2005
+    }
+}
+
+def reset_conn(protocol: str, username: typing.Optional[str] = None,
+               interface: typing.Optional[str] = None):
+    if protocol in cmd_dict['vpn_types']:
+        # Reset by Interface
+        if interface:
+            run(cmd_dict['cmd_base'].format(cmd_dict['vpn_types'][protocol],
+                                            'if', interface))
             return
-        elif protocol == "l2tp":
-            l2tp_cmd.append("terminate username {0}".format(username))
-            subprocess.call(l2tp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
+            # Reset by username
+        if username:
+            run(cmd_dict['cmd_base'].format(cmd_dict['vpn_types'][protocol],
+                                            'username', username))
+        # Reset all
         else:
-            pptp_cmd.append("terminate username {0}".format(username))
-            subprocess.call(pptp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            l2tp_cmd.append("terminate username {0}".format(username))
-            subprocess.call(l2tp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-
-    # rewrite `terminate by interface` if pptp will have pptp%d interface naming
-    if interface:
-        pptp_cmd.append("terminate if {0}".format(interface))
-        subprocess.call(pptp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        l2tp_cmd.append("terminate if {0}".format(interface))
-        subprocess.call(l2tp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-       
-
-def main():
-    #parese args
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--username', help='Terminate by username (all_users used for disconnect all users)', required=False)
-    parser.add_argument('--interface', help='Terminate by interface', required=False)
-    parser.add_argument('--protocol', help='Set protocol (pptp|l2tp)', required=False)
-    args = parser.parse_args()
-
-    if args.username or args.interface:
-        terminate_sessions(username=args.username, interface=args.interface, protocol=args.protocol)
+            run(cmd_dict['cmd_base'].format(cmd_dict['vpn_types'][protocol],
+                                            'all',
+                                            ''))
     else:
-        print("Param --username or --interface required")
-        sys.exit(1)
-
-    terminate_sessions()
+        vyos.opmode.IncorrectValue('Unknown VPN Protocol, aborting')
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        res = vyos.opmode.run(sys.modules[__name__])
+        if res:
+            print(res)
+    except (ValueError, vyos.opmode.Error) as e:
+        print(e)
+        sys.exit(1)

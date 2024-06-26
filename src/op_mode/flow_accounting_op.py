@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018 VyOS maintainers and contributors
+# Copyright (C) 2018-2023 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -13,86 +13,78 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
 
 import sys
 import argparse
 import re
 import ipaddress
-import subprocess
 import os.path
+
 from tabulate import tabulate
+from json import loads
+from vyos.utils.commit import commit_in_progress
+from vyos.utils.process import cmd
+from vyos.utils.process import run
+from vyos.logger import syslog
 
 # some default values
 uacctd_pidfile = '/var/run/uacctd.pid'
 uacctd_pipefile = '/tmp/uacctd.pipe'
 
+def parse_port(port):
+    try:
+        port_num = int(port)
+        if (port_num >= 0) and (port_num <= 65535):
+            return port_num
+        else:
+            raise ValueError("out of the 0-65535 range".format(port))
+    except ValueError as e:
+        raise ValueError("Incorrect port number \'{0}\': {1}".format(port, e))
 
-# check if ports argument have correct format
-def _is_ports(ports):
-    # define regex for checking
-    regex_filter = re.compile('^(\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$|^(\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])-(\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$|^((\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]),)+(\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$')
-    if not regex_filter.search(ports):
-        raise argparse.ArgumentTypeError("Invalid ports: {}".format(ports))
-
-    # check which type nitation is used: single port, ports list, ports range
-    # single port
-    regex_filter = re.compile('^(\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$')
-    if regex_filter.search(ports):
-        filter_ports = { 'type': 'single', 'value': int(ports) }
-
-    # ports list
-    regex_filter = re.compile('^((\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]),)+(\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])')
-    if regex_filter.search(ports):
-        filter_ports = { 'type': 'list', 'value': list(map(int, ports.split(','))) }
-
-    # ports range
-    regex_filter = re.compile('^(?P<first>\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])-(?P<second>\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$')
-    if regex_filter.search(ports):
-        # check if second number is greater than the first
-        if int(regex_filter.search(ports).group('first')) >= int(regex_filter.search(ports).group('second')):
-            raise argparse.ArgumentTypeError("Invalid ports: {}".format(ports))
-        filter_ports = { 'type': 'range', 'value': range(int(regex_filter.search(ports).group('first')), int(regex_filter.search(ports).group('second'))) }
-
-    # if all above failed
-    if not filter_ports:
-        raise argparse.ArgumentTypeError("Failed to parse: {}".format(ports))
+def parse_ports(arg):
+    if re.match(r'^\d+$', arg):
+        # Single port
+        port = parse_port(arg)
+        return {"type": "single", "value": port}
+    elif re.match(r'^\d+\-\d+$', arg):
+        # Port range
+        ports = arg.split("-")
+        ports = list(map(parse_port, ports))
+        if ports[0] > ports[1]:
+            raise ValueError("Malformed port range \'{0}\': lower end is greater than the higher".format(arg))
+        else:
+            return {"type": "range", "value": (ports[0], ports[1])}
+    elif re.match(r'^\d+,.*\d$', arg):
+        # Port list
+        ports = re.split(r',+', arg) # This allows duplicate commad like '1,,2,3,4'
+        ports = list(map(parse_port, ports))
+        return {"type": "list", "value": ports}
     else:
-        return filter_ports
+        raise ValueError("Malformed port spec \'{0}\'".format(arg))
 
 # check if host argument have correct format
-def _is_host(host):
+def check_host(host):
     # define regex for checking
     if not ipaddress.ip_address(host):
-        raise argparse.ArgumentTypeError("Invalid host: {}".format(host))
-    return host
+        raise ValueError("Invalid host \'{}\', must be a valid IP or IPv6 address".format(host))
 
 # check if flow-accounting running
 def _uacctd_running():
-    command = "/usr/bin/sudo /bin/systemctl status uacctd > /dev/null"
-    return_code = subprocess.call(command, shell=True)
-    if not return_code == 0:
-        return False
+    command = 'systemctl status uacctd.service > /dev/null'
+    return run(command) == 0
 
-    # return True if all checks were passed
-    return True
 
 # get list of interfaces
 def _get_ifaces_dict():
     # run command to get ifaces list
-    command = "/bin/ip link show"
-    process = subprocess.Popen(command.split(' '), stdout=subprocess.PIPE, universal_newlines=True)
-    stdout, stderr = process.communicate()
-    if not process.returncode == 0:
-        print("Failed to get interfaces list: command \"{}\" returned exit code: {}".format(command, process.returncode))
-        sys.exit(1)
+    out = cmd('/bin/ip link show')
 
     # read output
-    ifaces_out = stdout.splitlines()
+    ifaces_out = out.splitlines()
 
     # make a dictionary with interfaces and indexes
     ifaces_dict = {}
-    regex_filter = re.compile('^(?P<iface_index>\d+):\ (?P<iface_name>[\w\d\.]+)[:@].*$')
+    regex_filter = re.compile(r'^(?P<iface_index>\d+):\ (?P<iface_name>[\w\d\.]+)[:@].*$')
     for iface_line in ifaces_out:
         if regex_filter.search(iface_line):
             ifaces_dict[int(regex_filter.search(iface_line).group('iface_index'))] = regex_filter.search(iface_line).group('iface_name')
@@ -100,26 +92,27 @@ def _get_ifaces_dict():
     # return dictioanry
     return ifaces_dict
 
+
 # get list of flows
 def _get_flows_list():
     # run command to get flows list
-    command = "/usr/bin/pmacct -s -O json -T flows -p {}".format(uacctd_pipefile)
-    process = subprocess.Popen(command.split(' '), stdout=subprocess.PIPE, universal_newlines=True)
-    stdout, stderr = process.communicate()
-    if not process.returncode == 0:
-        print("Failed to get flows list: command \"{}\" returned exit code: {}\nError: {}".format(command, process.returncode, stderr))
-        sys.exit(1)
+    out = cmd(f'/usr/bin/pmacct -s -O json -T flows -p {uacctd_pipefile}',
+              message='Failed to get flows list')
 
     # read output
-    flows_out = stdout.splitlines()
+    flows_out = out.splitlines()
 
     # make a list with flows
     flows_list = []
     for flow_line in flows_out:
-        flows_list.append(eval(flow_line))
+        try:
+            flows_list.append(loads(flow_line))
+        except Exception as err:
+            syslog.error('Unable to read flow info: {}'.format(err))
 
     # return list of flows
     return flows_list
+
 
 # filter and format flows
 def _flows_filter(flows, ifaces):
@@ -162,14 +155,29 @@ def _flows_filter(flows, ifaces):
     # return filtered flows
     return flows_filtered
 
+
 # print flow table
 def _flows_table_print(flows):
-    #define headers and body
-    table_headers = [ 'IN_IFACE', 'SRC_MAC', 'DST_MAC', 'SRC_IP', 'DST_IP', 'SRC_PORT', 'DST_PORT', 'PROTOCOL', 'TOS', 'PACKETS', 'FLOWS', 'BYTES' ]
+    # define headers and body
+    table_headers = ['IN_IFACE', 'SRC_MAC', 'DST_MAC', 'SRC_IP', 'DST_IP', 'SRC_PORT', 'DST_PORT', 'PROTOCOL', 'TOS', 'PACKETS', 'FLOWS', 'BYTES']
     table_body = []
     # convert flows to list
     for flow in flows:
-        table_body.append([flow['iface_in_name'], flow['mac_src'], flow['mac_dst'], flow['ip_src'], flow['ip_dst'], flow['port_src'], flow['port_dst'], flow['ip_proto'], flow['tos'], flow['packets'], flow['flows'], flow['bytes'] ])
+        table_line = [
+            flow.get('iface_in_name'),
+            flow.get('mac_src'),
+            flow.get('mac_dst'),
+            flow.get('ip_src'),
+            flow.get('ip_dst'),
+            flow.get('port_src'),
+            flow.get('port_dst'),
+            flow.get('ip_proto'),
+            flow.get('tos'),
+            flow.get('packets'),
+            flow.get('flows'),
+            flow.get('bytes')
+        ]
+        table_body.append(table_line)
     # configure and fill table
     table = tabulate(table_body, table_headers, tablefmt="simple")
 
@@ -181,23 +189,34 @@ def _flows_table_print(flows):
     except KeyboardInterrupt:
         sys.exit(0)
 
+
 # check if in-memory table is active
 def _check_imt():
     if not os.path.exists(uacctd_pipefile):
         print("In-memory table is not available")
         sys.exit(1)
 
+
 # define program arguments
 cmd_args_parser = argparse.ArgumentParser(description='show flow-accounting')
 cmd_args_parser.add_argument('--action', choices=['show', 'clear', 'restart'], required=True, help='command to flow-accounting daemon')
 cmd_args_parser.add_argument('--filter', choices=['interface', 'host', 'ports', 'top'], required=False,  nargs='*', help='filter flows to display')
 cmd_args_parser.add_argument('--interface', required=False, help='interface name for output filtration')
-cmd_args_parser.add_argument('--host', type=_is_host, required=False, help='host address for output filtration')
-cmd_args_parser.add_argument('--ports', type=_is_ports, required=False, help='ports number for output filtration')
-cmd_args_parser.add_argument('--top', type=int, required=False, help='top records for output filtration')
+cmd_args_parser.add_argument('--host', type=str, required=False, help='host address for output filtering')
+cmd_args_parser.add_argument('--ports', type=str, required=False, help='port number, range or list for output filtering')
+cmd_args_parser.add_argument('--top', type=int, required=False, help='top records for output filtering')
 # parse arguments
 cmd_args = cmd_args_parser.parse_args()
 
+try:
+    if cmd_args.host:
+        check_host(cmd_args.host)
+
+    if cmd_args.ports:
+        cmd_args.ports = parse_ports(cmd_args.ports)
+except ValueError as e:
+    print(e)
+    sys.exit(1)
 
 # main logic
 # do nothing if uacctd daemon is not running
@@ -207,22 +226,19 @@ if not _uacctd_running():
 
 # restart pmacct daemon
 if cmd_args.action == 'restart':
+    if commit_in_progress():
+        print('Cannot restart flow-accounting while a commit is in progress')
+        exit(1)
     # run command to restart flow-accounting
-    command = '/usr/bin/sudo /bin/systemctl restart uacctd'
-    return_code = subprocess.call(command.split(' '))
-    if not return_code == 0:
-        print("Failed to restart flow-accounting: command \"{}\" returned exit code: {}".format(command, return_code))
-        sys.exit(1)
+    cmd('systemctl restart uacctd.service',
+        message='Failed to restart flow-accounting')
 
 # clear in-memory collected flows
 if cmd_args.action == 'clear':
     _check_imt()
     # run command to clear flows
-    command = "/usr/bin/pmacct -e -p {}".format(uacctd_pipefile)
-    return_code = subprocess.call(command.split(' '))
-    if not return_code == 0:
-        print("Failed to clear flows: command \"{}\" returned exit code: {}".format(command, return_code))
-        sys.exit(1)
+    cmd(f'/usr/bin/pmacct -e -p {uacctd_pipefile}',
+        message='Failed to clear flows')
 
 # show table with flows
 if cmd_args.action == 'show':

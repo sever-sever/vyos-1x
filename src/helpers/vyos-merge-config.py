@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# Copyright 2019 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright 2019-2024 VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -16,15 +16,15 @@
 # License along with this library.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
-import os
-import subprocess
 import tempfile
 import vyos.defaults
 import vyos.remote
-import vyos.migrator
+
 from vyos.config import Config
 from vyos.configtree import ConfigTree
-
+from vyos.migrator import Migrator, VirtualMigrator
+from vyos.utils.process import cmd
+from vyos.utils.process import DEVNULL
 
 if (len(sys.argv) < 2):
     print("Need config file name to merge.")
@@ -61,19 +61,20 @@ with tempfile.NamedTemporaryFile() as file_to_migrate:
     with open(file_to_migrate.name, 'w') as fd:
         fd.write(config_file)
 
-    migration = vyos.migrator.Migrator(file_to_migrate.name)
+    virtual_migration = VirtualMigrator(file_to_migrate.name)
+    virtual_migration.run()
+
+    migration = Migrator(file_to_migrate.name)
     migration.run()
-    if migration.config_changed():
+
+    if virtual_migration.config_changed() or migration.config_changed():
         with open(file_to_migrate.name, 'r') as fd:
             config_file = fd.read()
 
 merge_config_tree = ConfigTree(config_file)
 
 effective_config = Config()
-
-output_effective_config = effective_config.show_config()
-
-effective_config_tree = ConfigTree(output_effective_config)
+effective_config_tree = effective_config._running_config
 
 effective_cmds = effective_config_tree.to_commands()
 merge_cmds = merge_config_tree.to_commands()
@@ -98,13 +99,11 @@ if (len(sys.argv) > 2):
 if path:
     add_cmds = [ cmd for cmd in add_cmds if path in cmd ]
 
-for cmd in add_cmds:
-    cmd = "/opt/vyatta/sbin/my_" + cmd
-
+for add in add_cmds:
     try:
-        subprocess.check_call(cmd, shell=True)
-    except subprocess.CalledProcessError as err:
-        print("Called process error: {}.".format(err))
+        cmd(f'/opt/vyatta/sbin/my_{add}', shell=True, stderr=DEVNULL)
+    except OSError as err:
+        print(err)
 
 if effective_config.session_changed():
     print("Merge complete. Use 'commit' to make changes effective.")

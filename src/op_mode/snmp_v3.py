@@ -37,7 +37,7 @@ SNMPv3 Groups:
 
     Group               View
     -----               ----
-    {% if group -%}{% for g in group -%}
+    {% if group %}{% for g in group %}
     {{ "%-20s" | format(g.name) }}{{ g.view }}({{ g.mode }})
     {% endfor %}{% endif %}
 """
@@ -47,7 +47,7 @@ SNMPv3 Trap-targets:
 
     Tpap-target                   Port   Protocol Auth Priv Type   EngineID                         User
     -----------                   ----   -------- ---- ---- ----   --------                         ----
-    {% if trap -%}{% for t in trap -%}
+    {% if trap %}{% for t in trap %}
     {{ "%-20s" | format(t.name) }}          {{ t.port }}    {{ t.proto }}      {{ t.auth }}  {{ t.priv }}  {{ t.type }}   {{ "%-32s" | format(t.engID) }} {{ t.user }}
     {% endfor %}{% endif %}
 """
@@ -57,14 +57,14 @@ SNMPv3 Users:
 
     User                Auth Priv Mode Group
     ----                ---- ---- ---- -----
-    {% if user -%}{% for u in user -%}
+    {% if user %}{% for u in user %}
     {{ "%-20s" | format(u.name) }}{{ u.auth }}  {{ u.priv }}  {{ u.mode }}   {{ u.group }}
     {% endfor %}{% endif %}
 """
 
 VIEW_OUTP_TMPL_SRC = """
 SNMPv3 Views:
-    {% if view -%}{% for v in view %}
+    {% if view %}{% for v in view %}
     View : {{ v.name }}
     OIDs : .{{ v.oids | join("\n           .")}}
     {% endfor %}{% endif %}
@@ -85,7 +85,7 @@ if __name__ == '__main__':
         'user': [],
         'view': []
     }
-    
+
     if c.exists_effective('service snmp v3 group'):
         for g in c.list_effective_nodes('service snmp v3 group'):
             group = {
@@ -146,7 +146,6 @@ if __name__ == '__main__':
 
             data['trap'].append(trap)
 
-    print(data)
     if args.all:
          # Special case, print all templates !
          tmpl = jinja2.Template(GROUP_OUTP_TMPL_SRC)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018 VyOS maintainers and contributors
+# Copyright (C) 2018-2024 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -13,16 +13,10 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-#
-
-import os
-import tempfile
-import unittest
-from unittest import TestCase, mock
 
 import vyos.configtree
 
+from unittest import TestCase
 
 class TestConfigParser(TestCase):
     def setUp(self):
@@ -39,8 +33,8 @@ class TestConfigParser(TestCase):
 
     def test_top_level_tag(self):
         self.assertTrue(self.config.exists(["top-level-tag-node"]))
-        # No sorting is intentional, child order must be preserved
-        self.assertEqual(self.config.list_nodes(["top-level-tag-node"]), ["foo", "bar"])
+        # Sorting is now intentional, during parsing of config
+        self.assertEqual(self.config.list_nodes(["top-level-tag-node"]), ["bar", "foo"])
 
     def test_copy(self):
         self.config.copy(["top-level-tag-node", "bar"], ["top-level-tag-node", "baz"])

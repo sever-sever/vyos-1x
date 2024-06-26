@@ -115,6 +115,13 @@ debian/files
 debian/tmp
 debian/debhelper-build-stamp
 debian/.debhelper/
+debian/vyos-1x
+debian/vyos-1x-vmware
+debian/vyos-1x-smoketest
+debian/*.postinst.debhelper
+debian/*.prerm.debhelper
+debian/*.postrm.debhelper
+debian/*.substvars
 
 # Sonar Cloud
 .scannerwork
@@ -126,8 +133,19 @@ debian/.debhelper/
 *.vpwhist
 *.vtg
 
+# VS Code
+.vscode/*
+!.vscode/settings.json
+
 # VIM
 *.swp
 
 # vyos-1x JSON version
 data/component-versions.json
+# vyos-1x XML cache
+python/vyos/xml_ref/cache.py
+python/vyos/xml_ref/pkg_cache/*_cache.py
+
+# We do not use pip
+Pipfile
+Pipfile.lock

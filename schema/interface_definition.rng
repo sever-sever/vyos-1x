@@ -2,19 +2,19 @@
 <grammar xmlns="http://relaxng.org/ns/structure/1.0">
   <!--
        interface_definition.rnc: VyConf reference tree XML grammar
-    
+
        Copyright (C) 2014. 2017 VyOS maintainers and contributors <maintainers@vyos.net>
-    
+
        This library is free software; you can redistribute it and/or
        modify it under the terms of the GNU Lesser General Public
        License as published by the Free Software Foundation; either
        version 2.1 of the License, or (at your option) any later version.
-    
+
        This library is distributed in the hope that it will be useful,
        but WITHOUT ANY WARRANTY; without even the implied warranty of
        MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
        Lesser General Public License for more details.
-    
+
        You should have received a copy of the GNU Lesser General Public
        License along with this library; if not, write to the Free Software
        Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
@@ -84,6 +84,9 @@
       </interleave>
       <interleave>
         <optional>
+          <ref name="defaultValue"/>
+        </optional>
+        <optional>
           <ref name="properties"/>
         </optional>
         <ref name="children"/>
@@ -95,8 +98,8 @@
     but can have values.
     Leaf node may contain one or more valueConstraint tags
     If multiple valueConstraint tags are used, they work a logical OR
-    Leaf nodes can have "multi" attribute that indicated that it can have
-    more than one value
+    Leaf nodes can have "multi" attribute that indicated that it can have more than one value
+    It can also have a default value
   -->
   <define name="leafNode">
     <element name="leafNode">
@@ -106,7 +109,21 @@
         </optional>
         <ref name="nodeNameAttr"/>
       </interleave>
-      <ref name="properties"/>
+      <interleave>
+        <optional>
+          <ref name="defaultValue"/>
+        </optional>
+        <ref name="properties"/>
+      </interleave>
+    </element>
+  </define>
+  <!--
+    Default value for leaf node, if applicable
+    It is used to generate default node state representation
+  -->
+  <define name="defaultValue">
+    <element name="defaultValue">
+      <text/>
     </element>
   </define>
   <!-- Normal and tag nodes may have children -->
@@ -125,7 +142,7 @@
     Nodes may have properties
     For simplicity, any property is allowed in any node,
     but whether they are used or not is implementation-defined
-    
+
     Leaf nodes may differ in number of values that can be
     associated with them.
     By default, a leaf node can have only one value.
@@ -133,7 +150,7 @@
     "valueless" means it can have no values at all.
     "hidden" means node visibility can be toggled, eg 'dangerous' commands,
     "secret" allows a node to hide its value from unprivileged users.
-    
+
     "priority" is used to influence node processing order for nodes
     with exact same dependencies and in compatibility modes.
   -->
@@ -146,6 +163,9 @@
         <optional>
           <ref name="constraint"/>
         </optional>
+        <zeroOrMore>
+          <ref name="constraintGroup"/>
+        </zeroOrMore>
         <zeroOrMore>
           <ref name="valueHelp"/>
         </zeroOrMore>
@@ -220,6 +240,24 @@
   -->
   <define name="constraint">
     <element name="constraint">
+      <oneOrMore>
+        <choice>
+          <element name="regex">
+            <text/>
+          </element>
+          <ref name="validator"/>
+        </choice>
+      </oneOrMore>
+    </element>
+  </define>
+  <!--
+    Tag and leaf nodes may have constraintGroups on their names and
+    values (respectively).
+    When multiple constraints are listed within a group, they work as
+    logical AND
+  -->
+  <define name="constraintGroup">
+    <element name="constraintGroup">
       <oneOrMore>
         <choice>
           <element name="regex">

@@ -1,4 +1,4 @@
-# Copyright 2017, 2019 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright 2017-2024 VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -29,7 +29,7 @@ There are multiple types of config tree nodes in VyOS, each requires
 its own set of operations.
 
 *Leaf nodes* (such as "address" in interfaces) can have values, but cannot
-have children. 
+have children.
 Leaf nodes can have one value, multiple values, or no values at all.
 
 For example, "system host-name" is a single-value leaf node,
@@ -60,25 +60,67 @@ In configuration mode, "base" functions like `exists`, `return_value` return val
 while functions prefixed "effective" return values from the running config.
 
 In operational mode, all functions return values from the running config.
-
 """
 
-import os
 import re
 import json
-import subprocess
+from typing import Union
 
 import vyos.configtree
+from vyos.xml_ref import multi_to_list
+from vyos.xml_ref import from_source
+from vyos.xml_ref import ext_dict_merge
+from vyos.xml_ref import relative_defaults
+from vyos.utils.dict import get_sub_dict
+from vyos.utils.dict import mangle_dict_keys
+from vyos.configsource import ConfigSource
+from vyos.configsource import ConfigSourceSession
 
+class ConfigDict(dict):
+    _from_defaults = {}
+    _dict_kwargs = {}
+    def from_defaults(self, path: list[str]) -> bool:
+        return from_source(self._from_defaults, path)
+    @property
+    def kwargs(self) -> dict:
+        return self._dict_kwargs
 
-class VyOSError(Exception):
+def config_dict_merge(src: dict, dest: Union[dict, ConfigDict]) -> ConfigDict:
+    if not isinstance(dest, ConfigDict):
+        dest = ConfigDict(dest)
+    return ext_dict_merge(src, dest)
+
+def config_dict_mangle_acme(name, cli_dict):
     """
-    Raised on config access errors, most commonly if the type of a config tree node
-    in the system does not match the type of operation.
-
+    Load CLI PKI dictionary and if an ACME certificate is used, load it's content
+    and place it into the CLI dictionary as it would be a "regular" CLI PKI based
+    certificate with private key
     """
-    pass
+    from vyos.base import ConfigError
+    from vyos.defaults import directories
+    from vyos.utils.file import read_file
+    from vyos.pki import encode_certificate
+    from vyos.pki import encode_private_key
+    from vyos.pki import load_certificate
+    from vyos.pki import load_private_key
 
+    try:
+        vyos_certbot_dir = directories['certbot']
+
+        if 'acme' in cli_dict:
+            tmp = read_file(f'{vyos_certbot_dir}/live/{name}/cert.pem')
+            tmp = load_certificate(tmp, wrap_tags=False)
+            cert_base64 = "".join(encode_certificate(tmp).strip().split("\n")[1:-1])
+
+            tmp = read_file(f'{vyos_certbot_dir}/live/{name}/privkey.pem')
+            tmp = load_private_key(tmp, wrap_tags=False)
+            key_base64 = "".join(encode_private_key(tmp).strip().split("\n")[1:-1])
+            # install ACME based PEM keys into "regular" CLI config keys
+            cli_dict.update({'certificate' : cert_base64, 'private' : {'key' : key_base64}})
+    except:
+        raise ConfigError(f'Unable to load ACME certificates for "{name}"!')
+
+    return cli_dict
 
 class Config(object):
     """
@@ -88,36 +130,23 @@ class Config(object):
     the only state it keeps is relative *config path* for convenient access to config
     subtrees.
     """
-    def __init__(self, session_env=None):
-        self._cli_shell_api = "/bin/cli-shell-api"
+    def __init__(self, session_env=None, config_source=None):
+        if config_source is None:
+            self._config_source = ConfigSourceSession(session_env)
+        else:
+            if not isinstance(config_source, ConfigSource):
+                raise TypeError("config_source not of type ConfigSource")
+            self._config_source = config_source
+
         self._level = []
-        if session_env:
-            self.__session_env = session_env
-        else:
-            self.__session_env = None
+        self._dict_cache = {}
+        (self._running_config,
+         self._session_config) = self._config_source.get_configtree_tuple()
 
-        # Running config can be obtained either from op or conf mode, it always succeeds
-        # (if config system is initialized at all).
-        if os.path.isfile('/tmp/vyos-config-status'):
-            running_config_text = self._run([self._cli_shell_api, '--show-active-only', '--show-show-defaults', '--show-ignore-edit', 'showConfig'])
-        else:
-            with open('/opt/vyatta/etc/config/config.boot') as f:
-                running_config_text = f.read()
-
-        # Session config ("active") only exists in conf mode.
-        # In op mode, we'll just use the same running config for both active and session configs.
-        if self.in_session():
-            session_config_text = self._run([self._cli_shell_api, '--show-working-only', '--show-show-defaults', '--show-ignore-edit', 'showConfig'])
-        else:
-            session_config_text = running_config_text
-
-        self._session_config = vyos.configtree.ConfigTree(session_config_text)
-        self._running_config = vyos.configtree.ConfigTree(running_config_text)
-
-    def _make_command(self, op, path):
-        args = path.split()
-        cmd = [self._cli_shell_api, op] + args
-        return cmd
+    def get_config_tree(self, effective=False):
+        if effective:
+            return self._running_config
+        return self._session_config
 
     def _make_path(self, path):
         # Backwards-compatibility stuff: original implementation used string paths
@@ -133,19 +162,6 @@ class Config(object):
             raise TypeError("Path must be a whitespace-separated string or a list")
         return (self._level + path)
 
-    def _run(self, cmd):
-        if self.__session_env:
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, env=self.__session_env)
-        else:
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-        out = p.stdout.read()
-        p.wait()
-        p.communicate()
-        if p.returncode != 0:
-            raise VyOSError()
-        else:
-            return out.decode('ascii')
-
     def set_level(self, path):
         """
         Set the *edit level*, that is, a relative config tree path.
@@ -155,7 +171,7 @@ class Config(object):
         ``exists("system name-server"`` without ``set_level``.
 
         Args:
-            path (str): relative config path
+            path (str|list): relative config path
         """
         # Make sure there's always a space between default path (level)
         # and path supplied as method argument
@@ -166,7 +182,7 @@ class Config(object):
             else:
                 self._level = []
         elif isinstance(path, list):
-            self._level = path
+            self._level = path.copy()
         else:
             raise TypeError("Level path must be either a whitespace-separated string or a list")
 
@@ -177,33 +193,45 @@ class Config(object):
         Returns:
             str: current edit level
         """
-        return(self._level)
+        return(self._level.copy())
 
     def exists(self, path):
         """
-        Checks if a node with given path exists in the running or proposed config
+        Checks if a node or value with given path exists in the proposed config.
+
+        Args:
+            path (str): Configuration tree path
 
         Returns:
-            True if node exists, False otherwise
+            True if node or value exists in the proposed config, False otherwise
 
         Note:
-            This function cannot be used outside a configuration sessions.
+            This function should not be used outside of configuration sessions.
             In operational mode scripts, use ``exists_effective``.
         """
+        if self._session_config is None:
+            return False
+
+        # Assume the path is a node path first
         if self._session_config.exists(self._make_path(path)):
             return True
         else:
+            # If that check fails, it may mean the path has a value at the end.
             # libvyosconfig exists() works only for _nodes_, not _values_
-            # libvyattacfg one also worked for values, so we emulate that case here
+            # libvyattacfg also worked for values, so we emulate that case here
             if isinstance(path, str):
                 path = re.split(r'\s+', path)
             path_without_value = path[:-1]
-            path_str = " ".join(path_without_value)
             try:
-                value = self._session_config.return_value(self._make_path(path_str))
-                return (value == path[-1])
+                # return_values() is safe to use with single-value nodes,
+                # it simply returns a single-item list in that case.
+                values = self._session_config.return_values(self._make_path(path_without_value))
+
+                # If we got this far, the node does exist and has values,
+                # so we need to check if it has the value in question among its values.
+                return (path[-1] in values)
             except vyos.configtree.ConfigTreeError:
-                # node doesn't exist at all
+                # Even the parent node doesn't exist at all
                 return False
 
     def session_changed(self):
@@ -211,22 +239,14 @@ class Config(object):
         Returns:
             True if the config session has uncommited changes, False otherwise.
         """
-        try:
-            self._run(self._make_command('sessionChanged', ''))
-            return True
-        except VyOSError:
-            return False
+        return self._config_source.session_changed()
 
     def in_session(self):
         """
         Returns:
             True if called from a configuration session, False otherwise.
         """
-        try:
-            self._run(self._make_command('inSession', ''))
-            return True
-        except VyOSError:
-            return False
+        return self._config_source.in_session()
 
     def show_config(self, path=[], default=None, effective=False):
         """
@@ -237,34 +257,128 @@ class Config(object):
         Returns:
             str: working configuration
         """
+        return self._config_source.show_config(path, default, effective)
 
-        # FIXUP: by default, showConfig will give you a diff
-        # if there are uncommitted changes.
-        # The config parser obviously cannot work with diffs,
-        # so we need to supress diff production using appropriate
-        # options for getting either running (active)
-        # or proposed (working) config.
+    def get_cached_root_dict(self, effective=False):
+        cached = self._dict_cache.get(effective, {})
+        if cached:
+            return cached
+
         if effective:
-            path = ['--show-active-only'] + path
+            config = self._running_config
         else:
-            path = ['--show-working-only'] + path
+            config = self._session_config
 
-        if isinstance(path, list):
-            path = " ".join(path)
-        try:
-            out = self._run(self._make_command('showConfig', path))
-            return out
-        except VyOSError:
-            return(default)
+        if config:
+            config_dict = json.loads(config.to_json())
+        else:
+            config_dict = {}
 
-    def get_config_dict(self, path=[], effective=False):
+        self._dict_cache[effective] = config_dict
+
+        return config_dict
+
+    def verify_mangling(self, key_mangling):
+        if not (isinstance(key_mangling, tuple) and \
+                (len(key_mangling) == 2) and \
+                isinstance(key_mangling[0], str) and \
+                isinstance(key_mangling[1], str)):
+            raise ValueError("key_mangling must be a tuple of two strings")
+
+    def get_config_dict(self, path=[], effective=False, key_mangling=None,
+                        get_first_key=False, no_multi_convert=False,
+                        no_tag_node_value_mangle=False,
+                        with_defaults=False,
+                        with_recursive_defaults=False,
+                        with_pki=False):
         """
-        Args: path (str list): Configuration tree path, can be empty
-        Returns: a dict representation of the config
+        Args:
+            path (str list): Configuration tree path, can be empty
+            effective=False: effective or session config
+            key_mangling=None: mangle dict keys according to regex and replacement
+            get_first_key=False: if k = path[:-1], return sub-dict d[k] instead of {k: d[k]}
+            no_multi_convert=False: if convert, return single value of multi node as list
+
+        Returns: a dict representation of the config under path
         """
-        res = self.show_config(self._make_path(path), effective=effective)
-        config_tree = vyos.configtree.ConfigTree(res)
-        config_dict = json.loads(config_tree.to_json())
+        kwargs = locals().copy()
+        del kwargs['self']
+        del kwargs['no_multi_convert']
+        del kwargs['with_defaults']
+        del kwargs['with_recursive_defaults']
+        del kwargs['with_pki']
+
+        lpath = self._make_path(path)
+        root_dict = self.get_cached_root_dict(effective)
+        conf_dict = get_sub_dict(root_dict, lpath, get_first_key=get_first_key)
+
+        rpath = lpath if get_first_key else lpath[:-1]
+
+        if not no_multi_convert:
+            conf_dict = multi_to_list(rpath, conf_dict)
+
+        if key_mangling is not None:
+            self.verify_mangling(key_mangling)
+            conf_dict = mangle_dict_keys(conf_dict,
+                                         key_mangling[0], key_mangling[1],
+                                         abs_path=rpath,
+                                         no_tag_node_value_mangle=no_tag_node_value_mangle)
+
+        if with_defaults or with_recursive_defaults:
+            defaults = self.get_config_defaults(**kwargs,
+                                                recursive=with_recursive_defaults)
+            conf_dict = config_dict_merge(defaults, conf_dict)
+        else:
+            conf_dict = ConfigDict(conf_dict)
+
+        if with_pki and conf_dict:
+            pki_dict = self.get_config_dict(['pki'], key_mangling=('-', '_'),
+                                            no_tag_node_value_mangle=True,
+                                            get_first_key=True)
+            if pki_dict:
+                if 'certificate' in pki_dict:
+                    for certificate in pki_dict['certificate']:
+                        pki_dict['certificate'][certificate] = config_dict_mangle_acme(
+                            certificate, pki_dict['certificate'][certificate])
+
+            conf_dict['pki'] = pki_dict
+
+        # save optional args for a call to get_config_defaults
+        setattr(conf_dict, '_dict_kwargs', kwargs)
+
+        return conf_dict
+
+    def get_config_defaults(self, path=[], effective=False, key_mangling=None,
+                            no_tag_node_value_mangle=False, get_first_key=False,
+                            recursive=False) -> dict:
+        lpath = self._make_path(path)
+        root_dict = self.get_cached_root_dict(effective)
+        conf_dict = get_sub_dict(root_dict, lpath, get_first_key)
+
+        defaults = relative_defaults(lpath, conf_dict,
+                                     get_first_key=get_first_key,
+                                     recursive=recursive)
+
+        rpath = lpath if get_first_key else lpath[:-1]
+
+        if key_mangling is not None:
+            self.verify_mangling(key_mangling)
+            defaults = mangle_dict_keys(defaults,
+                                        key_mangling[0], key_mangling[1],
+                                        abs_path=rpath,
+                                        no_tag_node_value_mangle=no_tag_node_value_mangle)
+
+        return defaults
+
+    def merge_defaults(self, config_dict: ConfigDict, recursive=False):
+        if not isinstance(config_dict, ConfigDict):
+            raise TypeError('argument is not of type ConfigDict')
+        if not config_dict.kwargs:
+            raise ValueError('argument missing metadata')
+
+        args = config_dict.kwargs
+        d = self.get_config_defaults(**args, recursive=recursive)
+        config_dict = config_dict_merge(d, config_dict)
         return config_dict
 
     def is_multi(self, path):
@@ -278,12 +392,8 @@ class Config(object):
         Note:
             It also returns False if node doesn't exist.
         """
-        try:
-            path = " ".join(self._level) + " " + path
-            self._run(self._make_command('isMulti', path))
-            return True
-        except VyOSError:
-            return False
+        self._config_source.set_level(self.get_level)
+        return self._config_source.is_multi(path)
 
     def is_tag(self, path):
         """
@@ -296,12 +406,8 @@ class Config(object):
         Note:
             It also returns False if node doesn't exist.
         """
-        try:
-            path = " ".join(self._level) + " " + path
-            self._run(self._make_command('isTag', path))
-            return True
-        except VyOSError:
-            return False
+        self._config_source.set_level(self.get_level)
+        return self._config_source.is_tag(path)
 
     def is_leaf(self, path):
         """
@@ -314,12 +420,8 @@ class Config(object):
         Note:
             It also returns False if node doesn't exist.
         """
-        try:
-            path = " ".join(self._level) + " " + path
-            self._run(self._make_command('isLeaf', path))
-            return True
-        except VyOSError:
-            return False
+        self._config_source.set_level(self.get_level)
+        return self._config_source.is_leaf(path)
 
     def return_value(self, path, default=None):
         """
@@ -340,9 +442,12 @@ class Config(object):
             This function cannot be used outside a configuration session.
             In operational mode scripts, use ``return_effective_value``.
         """
-        try:
-            value = self._session_config.return_value(self._make_path(path))
-        except vyos.configtree.ConfigTreeError:
+        if self._session_config:
+            try:
+                value = self._session_config.return_value(self._make_path(path))
+            except vyos.configtree.ConfigTreeError:
+                value = None
+        else:
             value = None
 
         if not value:
@@ -365,13 +470,16 @@ class Config(object):
             This function cannot be used outside a configuration session.
             In operational mode scripts, use ``return_effective_values``.
         """
-        try:
-            values = self._session_config.return_values(self._make_path(path))
-        except vyos.configtree.ConfigTreeError:
+        if self._session_config:
+            try:
+                values = self._session_config.return_values(self._make_path(path))
+            except vyos.configtree.ConfigTreeError:
+                values = []
+        else:
             values = []
 
         if not values:
-            return(default)
+            return(default.copy())
         else:
             return(values)
 
@@ -386,19 +494,22 @@ class Config(object):
             string list: child node names
 
         """
-        try:
-            nodes = self._session_config.list_nodes(self._make_path(path))
-        except vyos.configtree.ConfigTreeError:
+        if self._session_config:
+            try:
+                nodes = self._session_config.list_nodes(self._make_path(path))
+            except vyos.configtree.ConfigTreeError:
+                nodes = []
+        else:
             nodes = []
 
         if not nodes:
-            return(default)
+            return(default.copy())
         else:
             return(nodes)
 
     def exists_effective(self, path):
         """
-        Check if a node exists in the running (effective) config
+        Checks if a node or value exists in the running (effective) config.
 
         Args:
             path (str): Configuration tree path
@@ -410,7 +521,31 @@ class Config(object):
             This function is safe to use in operational mode. In configuration mode,
             it ignores uncommited changes.
         """
-        return(self._running_config.exists(self._make_path(path)))
+        if self._running_config is None:
+            return False
+
+        # Assume the path is a node path first
+        if self._running_config.exists(self._make_path(path)):
+            return True
+        else:
+            # If that check fails, it may mean the path has a value at the end.
+            # libvyosconfig exists() works only for _nodes_, not _values_
+            # libvyattacfg also worked for values, so we emulate that case here
+            if isinstance(path, str):
+                path = re.split(r'\s+', path)
+            path_without_value = path[:-1]
+            try:
+                # return_values() is safe to use with single-value nodes,
+                # it simply returns a single-item list in that case.
+                values = self._running_config.return_values(self._make_path(path_without_value))
+
+                # If we got this far, the node does exist and has values,
+                # so we need to check if it has the value in question among its values.
+                return (path[-1] in values)
+            except vyos.configtree.ConfigTreeError:
+                # Even the parent node doesn't exist at all
+                return False
+
 
     def return_effective_value(self, path, default=None):
         """
@@ -423,16 +558,18 @@ class Config(object):
         Returns:
             str: Node value
         """
-        try:
-            value = self._running_config.return_value(self._make_path(path))
-        except vyos.configtree.ConfigTreeError:
+        if self._running_config:
+            try:
+                value = self._running_config.return_value(self._make_path(path))
+            except vyos.configtree.ConfigTreeError:
+                value = None
+        else:
             value = None
 
         if not value:
             return(default)
         else:
             return(value)
-
 
     def return_effective_values(self, path, default=[]):
         """
@@ -444,13 +581,16 @@ class Config(object):
         Returns:
             str list: A list of values
         """
-        try:
-            values = self._running_config.return_values(self._make_path(path))
-        except vyos.configtree.ConfigTreeError:
+        if self._running_config:
+            try:
+                values = self._running_config.return_values(self._make_path(path))
+            except vyos.configtree.ConfigTreeError:
+                values = []
+        else:
             values = []
 
         if not values:
-            return(default)
+            return(default.copy())
         else:
             return(values)
 
@@ -463,16 +603,16 @@ class Config(object):
 
         Returns:
             str list: child node names
-
-        Raises:
-            VyOSError: if the node is not a tag node
         """
-        try:
-            nodes = self._running_config.list_nodes(self._make_path(path))
-        except vyos.configtree.ConfigTreeError:
+        if self._running_config:
+            try:
+                nodes = self._running_config.list_nodes(self._make_path(path))
+            except vyos.configtree.ConfigTreeError:
+                nodes = []
+        else:
             nodes = []
 
         if not nodes:
-            return(default)
+            return(default.copy())
         else:
             return(nodes)

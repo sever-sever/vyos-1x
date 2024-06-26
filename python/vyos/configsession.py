@@ -1,5 +1,4 @@
-# configsession -- the write API for the VyOS running config
-# Copyright (C) 2019 VyOS maintainers and contributors
+# Copyright (C) 2019-2024 VyOS maintainers and contributors
 #
 # This library is free software; you can redistribute it and/or modify it under the terms of
 # the GNU Lesser General Public License as published by the Free Software Foundation;
@@ -10,12 +9,18 @@
 # See the GNU Lesser General Public License for more details.
 #
 # You should have received a copy of the GNU Lesser General Public License along with this library;
-# if not, write to the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA 
+# if not, write to the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+# configsession -- the write API for the VyOS running config
 
 import os
 import re
 import sys
 import subprocess
+
+from vyos.defaults import directories
+from vyos.utils.process import is_systemd_service_running
+from vyos.utils.dict import dict_to_paths
 
 CLI_SHELL_API = '/bin/cli-shell-api'
 SET = '/opt/vyatta/sbin/my_set'
@@ -25,10 +30,21 @@ COMMIT = '/opt/vyatta/sbin/my_commit'
 DISCARD = '/opt/vyatta/sbin/my_discard'
 SHOW_CONFIG = ['/bin/cli-shell-api', 'showConfig']
 LOAD_CONFIG = ['/bin/cli-shell-api', 'loadFile']
-SAVE_CONFIG = ['/opt/vyatta/sbin/vyatta-save-config.pl']
-INSTALL_IMAGE = ['/opt/vyatta/sbin/install-image']
-REMOVE_IMAGE = ['/opt/vyatta/bin/vyatta-boot-image.pl', '--del']
+MIGRATE_LOAD_CONFIG = ['/usr/libexec/vyos/vyos-load-config.py']
+SAVE_CONFIG = ['/usr/libexec/vyos/vyos-save-config.py']
+INSTALL_IMAGE = ['/usr/libexec/vyos/op_mode/image_installer.py',
+                 '--action', 'add', '--no-prompt', '--image-path']
+REMOVE_IMAGE = ['/usr/libexec/vyos/op_mode/image_manager.py',
+                '--action', 'delete', '--no-prompt', '--image-name']
+SET_DEFAULT_IMAGE = ['/usr/libexec/vyos/op_mode/image_manager.py',
+                '--action', 'set', '--no-prompt', '--image-name']
 GENERATE = ['/opt/vyatta/bin/vyatta-op-cmd-wrapper', 'generate']
+SHOW = ['/opt/vyatta/bin/vyatta-op-cmd-wrapper', 'show']
+RESET = ['/opt/vyatta/bin/vyatta-op-cmd-wrapper', 'reset']
+REBOOT = ['/opt/vyatta/bin/vyatta-op-cmd-wrapper', 'reboot']
+POWEROFF = ['/opt/vyatta/bin/vyatta-op-cmd-wrapper', 'poweroff']
+OP_CMD_ADD = ['/opt/vyatta/bin/vyatta-op-cmd-wrapper', 'add']
+OP_CMD_DELETE = ['/opt/vyatta/bin/vyatta-op-cmd-wrapper', 'delete']
 
 # Default "commit via" string
 APP = "vyos-http-api"
@@ -44,7 +60,7 @@ def inject_vyos_env(env):
     env['VYOS_HEADLESS_CLIENT'] = 'vyos_http_api'
     env['vyatta_bindir']= '/opt/vyatta/bin'
     env['vyatta_cfg_templates'] = '/opt/vyatta/share/vyatta-cfg/templates'
-    env['vyatta_configdir'] = '/opt/vyatta/config'
+    env['vyatta_configdir'] = directories['vyos_configdir']
     env['vyatta_datadir'] = '/opt/vyatta/share'
     env['vyatta_datarootdir'] = '/opt/vyatta/share'
     env['vyatta_libdir'] = '/opt/vyatta/lib'
@@ -56,7 +72,7 @@ def inject_vyos_env(env):
     env['vyos_bin_dir'] = '/usr/bin'
     env['vyos_cfg_templates'] = '/opt/vyatta/share/vyatta-cfg/templates'
     env['vyos_completion_dir'] = '/usr/libexec/vyos/completion'
-    env['vyos_configdir'] = '/opt/vyatta/config'
+    env['vyos_configdir'] = directories['vyos_configdir']
     env['vyos_conf_scripts_dir'] = '/usr/libexec/vyos/conf_mode'
     env['vyos_datadir'] = '/opt/vyatta/share'
     env['vyos_datarootdir']= '/opt/vyatta/share'
@@ -67,6 +83,10 @@ def inject_vyos_env(env):
     env['vyos_prefix'] = '/opt/vyatta'
     env['vyos_sbin_dir'] = '/usr/sbin'
     env['vyos_validators_dir'] = '/usr/libexec/vyos/validators'
+
+    # if running the vyos-configd daemon, inject the vyshim env var
+    if is_systemd_service_running('vyos-configd.service'):
+        env['vyshim'] = '/usr/sbin/vyshim'
 
     return env
 
@@ -120,9 +140,9 @@ class ConfigSession(object):
 
     def __run_command(self, cmd_list):
         p = subprocess.Popen(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=self.__session_env)
+        (stdout_data, stderr_data) = p.communicate()
+        output = stdout_data.decode()
         result = p.wait()
-        output = p.stdout.read().decode()
-        p.communicate()
         if result != 0:
             raise ConfigSessionError(output)
         return output
@@ -137,12 +157,47 @@ class ConfigSession(object):
             value = [value]
         self.__run_command([SET] + path + value)
 
+    def set_section(self, path: list, d: dict):
+        try:
+            for p in dict_to_paths(d):
+                self.set(path + p)
+        except (ValueError, ConfigSessionError) as e:
+            raise ConfigSessionError(e)
+
     def delete(self, path, value=None):
         if not value:
             value = []
         else:
             value = [value]
         self.__run_command([DELETE] + path + value)
+
+    def load_section(self, path: list, d: dict):
+        try:
+            self.delete(path)
+            if d:
+                for p in dict_to_paths(d):
+                    self.set(path + p)
+        except (ValueError, ConfigSessionError) as e:
+            raise ConfigSessionError(e)
+
+    def set_section_tree(self, d: dict):
+        try:
+            if d:
+                for p in dict_to_paths(d):
+                    self.set(p)
+        except (ValueError, ConfigSessionError) as e:
+            raise ConfigSessionError(e)
+
+    def load_section_tree(self, mask: dict, d: dict):
+        try:
+            if mask:
+                for p in dict_to_paths(mask):
+                    self.delete(p)
+            if d:
+                for p in dict_to_paths(d):
+                    self.set(p)
+        except (ValueError, ConfigSessionError) as e:
+            raise ConfigSessionError(e)
 
     def comment(self, path, value=None):
         if not value:
@@ -168,6 +223,10 @@ class ConfigSession(object):
         out = self.__run_command(LOAD_CONFIG + [file_path])
         return out
 
+    def migrate_and_load_config(self, file_path):
+        out = self.__run_command(MIGRATE_LOAD_CONFIG + [file_path])
+        return out
+
     def save_config(self, file_path):
         out = self.__run_command(SAVE_CONFIG + [file_path])
         return out
@@ -180,6 +239,38 @@ class ConfigSession(object):
         out = self.__run_command(REMOVE_IMAGE + [name])
         return out
 
-    def generate(self, cmd):
-        out = self.__run_command(GENERATE + cmd)
+    def set_default_image(self, name):
+        out = self.__run_command(SET_DEFAULT_IMAGE + [name])
+        return out
+
+    def generate(self, path):
+        out = self.__run_command(GENERATE + path)
+        return out
+
+    def show(self, path):
+        out = self.__run_command(SHOW + path)
+        return out
+
+    def reboot(self, path):
+        out = self.__run_command(REBOOT + path)
+        return out
+
+    def reset(self, path):
+        out = self.__run_command(RESET + path)
+        return out
+
+    def poweroff(self, path):
+        out = self.__run_command(POWEROFF + path)
+        return out
+
+    def add_container_image(self, name):
+        out = self.__run_command(OP_CMD_ADD + ['container', 'image'] + [name])
+        return out
+
+    def delete_container_image(self, name):
+        out = self.__run_command(OP_CMD_DELETE + ['container', 'image'] + [name])
+        return out
+
+    def show_container_image(self):
+        out = self.__run_command(SHOW + ['container', 'image'])
         return out

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019 VyOS maintainers and contributors
+# Copyright (C) 2019-2023 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -13,21 +13,21 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
 
 import sys
 import os
 import re
 import argparse
-import subprocess
+
 from vyos.config import Config
+from vyos.utils.process import call
+from vyos.utils.process import popen
 
 def detect_qat_dev():
-    ret = subprocess.Popen(['sudo', 'lspci',  '-nn'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    (output, err) = ret.communicate()
+    output, err = popen('lspci -nn', decode='utf-8')
     if not err:
-        data = re.findall('(8086:19e2)|(8086:37c8)|(8086:0435)|(8086:6f54)', output.decode("utf-8"))
-        #If QAT devices found
+        data = re.findall('(8086:19e2)|(8086:37c8)|(8086:0435)|(8086:6f54)', output)
+        # QAT devices found
         if data:
             return
     print("\t No QAT device found")
@@ -37,20 +37,17 @@ def show_qat_status():
     detect_qat_dev()
 
     # Check QAT service
-    if not os.path.exists('/etc/init.d/vyos-qat-utilities'):
+    if not os.path.exists('/etc/init.d/qat_service'):
         print("\t QAT service not installed")
         sys.exit(1)
 
     # Show QAT service
-    os.system('sudo /etc/init.d/vyos-qat-utilities status')
+    call('/etc/init.d/qat_service status')
 
 # Return QAT devices
 def get_qat_devices():
-    ret = subprocess.Popen(['sudo', '/etc/init.d/vyos-qat-utilities',  'status'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    (output, err) = ret.communicate()
+    data_st, err = popen('/etc/init.d/qat_service status', decode='utf-8')
     if not err:
-        #print(output)
-        data_st = output.decode("utf-8")
         elm_lst = re.findall('qat_dev\d', data_st)
         print('\n'.join(elm_lst))
 
@@ -58,11 +55,10 @@ def get_qat_devices():
 def get_qat_proc_path(qat_dev):
     q_type = ""
     q_bsf  = ""
-    ret = subprocess.Popen(['sudo', '/etc/init.d/vyos-qat-utilities',  'status'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    (output, err) = ret.communicate()
+    output, err = popen('/etc/init.d/qat_service status', decode='utf-8')
     if not err:
         # Parse QAT service output
-        data_st = output.decode("utf-8").split("\n")
+        data_st = output.split("\n")
         for elm_str in range(len(data_st)):
             if re.search(qat_dev, data_st[elm_str]):
                 elm_list = data_st[elm_str].split(", ")
@@ -97,20 +93,20 @@ args = parser.parse_args()
 if args.hw:
     detect_qat_dev()
     # Show availible Intel QAT devices
-    os.system('sudo lspci -nn | egrep -e \'8086:37c8|8086:19e2|8086:0435|8086:6f54\'')
+    call('lspci -nn | egrep -e \'8086:37c8|8086:19e2|8086:0435|8086:6f54\'')
 elif args.flow and args.dev:
     check_qat_if_conf()
-    os.system('sudo cat '+get_qat_proc_path(args.dev)+"fw_counters")
+    call('cat '+get_qat_proc_path(args.dev)+"fw_counters")
 elif args.interrupts:
     check_qat_if_conf()
     # Delete _dev from args.dev
-    os.system('sudo cat /proc/interrupts | grep qat')
+    call('cat /proc/interrupts | grep qat')
 elif args.status:
     check_qat_if_conf()
     show_qat_status()
 elif args.conf and args.dev:
     check_qat_if_conf()
-    os.system('sudo cat '+get_qat_proc_path(args.dev)+"dev_cfg")
+    call('cat '+get_qat_proc_path(args.dev)+"dev_cfg")
 elif args.dev_list:
     get_qat_devices()
 else:

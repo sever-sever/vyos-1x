@@ -27,6 +27,7 @@ import copy
 import functools
 
 from lxml import etree as ET
+from textwrap import fill
 
 # Defaults
 
@@ -86,7 +87,38 @@ def make_path(l):
         print(path)
     return path
 
-def get_properties(p):
+def collect_validators(ve):
+    regexes = []
+    regex_elements = ve.findall("regex")
+    if regex_elements is not None:
+        regexes = list(map(lambda e: e.text.strip().replace('\\','\\\\'), regex_elements))
+    if "" in regexes:
+        print("Warning: empty regex, node will be accepting any value")
+
+    validator_elements = ve.findall("validator")
+    validators = []
+    if validator_elements is not None:
+        for v in validator_elements:
+            v_name = os.path.join(validator_dir, v.get("name"))
+
+            # XXX: lxml returns None for empty arguments
+            v_argument = None
+            try:
+                v_argument = v.get("argument")
+            except:
+                pass
+            if v_argument is None:
+                v_argument = ""
+
+            validators.append("{0} {1}".format(v_name, v_argument))
+
+
+    regex_args = " ".join(map(lambda s: "--regex \\\'{0}\\\'".format(s), regexes))
+    validator_args = " ".join(map(lambda s: "--exec \\\"{0}\\\"".format(s), validators))
+
+    return regex_args + " " + validator_args
+
+def get_properties(p, default=None):
     props = {}
 
     if p is None:
@@ -94,7 +126,13 @@ def get_properties(p):
 
     # Get the help string
     try:
-        props["help"] = p.find("help").text
+        help = p.find("help").text
+        if default != None:
+            # DNS forwarding for instance has multiple defaults - specified as whitespace separated list
+            tmp = ', '.join(default.text.split())
+            help += f' (default: {tmp})'
+        help = fill(help, width=64, subsequent_indent='\t\t\t')
+        props["help"] = help
     except:
         pass
 
@@ -103,12 +141,19 @@ def get_properties(p):
         vhe = p.findall("valueHelp")
         vh = []
         for v in vhe:
-            vh.append( (v.find("format").text, v.find("description").text) )
+            format = v.find("format").text
+            description = v.find("description").text
+            if default != None and default.text == format:
+                description += f' (default)'
+            # Is no description was specified, keep it empty
+            if not description: description = ''
+            vh.append( (format, description) )
         props["val_help"] = vh
     except:
         props["val_help"] = []
 
-    # Get the constraint statements
+    # Get the constraint and constraintGroup statements
+
     error_msg = default_constraint_err_msg
     # Get the error message if it's there
     try:
@@ -117,40 +162,24 @@ def get_properties(p):
         pass
 
     vce = p.find("constraint")
-    vc = []
+
+    distinct_validator_string = ""
     if vce is not None:
         # The old backend doesn't support multiple validators in OR mode
         # so we emulate it
 
-        regexes = []
-        regex_elements = vce.findall("regex")
-        if regex_elements is not None:
-            regexes = list(map(lambda e: e.text.strip().replace('\\','\\\\'), regex_elements))
-        if "" in regexes:
-            print("Warning: empty regex, node will be accepting any value")
+        distinct_validator_string = collect_validators(vce)
 
-        validator_elements = vce.findall("validator")
-        validators = []
-        if validator_elements is not None:
-            for v in validator_elements:
-                v_name = os.path.join(validator_dir, v.get("name"))
+    vcge = p.findall("constraintGroup")
 
-                # XXX: lxml returns None for empty arguments
-                v_argument = None
-                try:
-                    v_argument = v.get("argument")
-                except:
-                    pass
-                if v_argument is None:
-                    v_argument = ""
+    group_validator_string = ""
+    if len(vcge):
+        for vcg in vcge:
+            group_validator_string = group_validator_string + " --grp " + collect_validators(vcg)
 
-                validators.append("{0} {1}".format(v_name, v_argument))
-
-
-        regex_args = " ".join(map(lambda s: "--regex \\\'{0}\\\'".format(s), regexes))
-        validator_args = " ".join(map(lambda s: "--exec \\\"{0}\\\"".format(s), validators))
-        validator_script = '${vyos_libexec_dir}/validate-value.py'
-        validator_string = "exec \"{0} {1} {2} --value \\\'$VAR(@)\\\'\"; \"{3}\"".format(validator_script, regex_args, validator_args, error_msg)
+    if vce is not None or len(vcge):
+        validator_script = '${vyos_libexec_dir}/validate-value'
+        validator_string = "exec \"{0} {1} {2} --value \\\'$VAR(@)\\\'\"; \"{3}\"".format(validator_script, distinct_validator_string, group_validator_string, error_msg)
 
         props["constraint"] = validator_string
 
@@ -167,12 +196,12 @@ def get_properties(p):
             # so we get to emulate it
             comp_exprs = []
             for i in lists:
-                comp_exprs.append("echo \"{0}\"".format(i.text))
+                comp_exprs.append(f'echo "{i.text}"')
             for i in paths:
-                comp_exprs.append("/bin/cli-shell-api listNodes {0}".format(i.text))
+                comp_exprs.append(f'/bin/cli-shell-api listNodes {i.text}')
             for i in scripts:
-                comp_exprs.append("sh -c \"{0}\"".format(i.text))
-            comp_help = " && ".join(comp_exprs)
+                comp_exprs.append(f'sh -c "{i.text}"')
+            comp_help = ' && echo " " && '.join(comp_exprs)
             props["comp_help"] = comp_help
     except:
         props["comp_help"] = []
@@ -225,11 +254,13 @@ def make_node_def(props):
     if "constraint" in props:
         node_def += "syntax:expression: {0}\n".format(props["constraint"])
 
+    shim = '${vyshim}'
+
     if "owner" in props:
         if "tag" in props:
-            node_def += "end: sudo sh -c \"VYOS_TAGNODE_VALUE='$VAR(@)' {0}\"\n".format(props["owner"])
+            node_def += "end: sudo sh -c \"{1} VYOS_TAGNODE_VALUE='$VAR(@)' {0}\"\n".format(props["owner"], shim)
         else:
-            node_def += "end: sudo sh -c \"{0}\"\n".format(props["owner"])
+            node_def += "end: sudo sh -c \"{1} {0}\"\n".format(props["owner"], shim)
 
     if debug:
         print("The contents of the node.def file:\n", node_def)
@@ -249,12 +280,19 @@ def process_node(n, tmpl_dir):
 
     my_tmpl_dir.append(name)
 
-    print("Name of the node: {0}. Created directory: {1}\n".format(name, "/".join(my_tmpl_dir)), end="")
+    if debug:
+        print("Name of the node: {0}. Created directory: {1}\n".format(name, "/".join(my_tmpl_dir)), end="")
     os.makedirs(make_path(my_tmpl_dir), exist_ok=True)
 
-    props = get_properties(props_elem)
+    props = get_properties(props_elem, n.find("defaultValue"))
     if owner:
         props["owner"] = owner
+        # <priority> tag is mandatory if the parent node has an owner
+        if "priority" not in props:
+            raise ValueError(
+                f"<priority> tag should be set for the node <{name}> path '{' '.join(my_tmpl_dir[1:])}'"
+            )
+
     # Type should not be set for non-tag, non-leaf nodes
     # For non-valueless leaf nodes, set the type to txt: to make them have some type,
     # actual value validation is handled by constraints translated to syntax:expression:
@@ -264,15 +302,21 @@ def process_node(n, tmpl_dir):
     if node_type == "tagNode":
         props["tag"] = "True"
 
+    if node_type != "leafNode":
+        if "multi" in props:
+            raise ValueError("<multi/> tag is only allowed in <leafNode>")
+        if "valueless" in props:
+            raise ValueError("<valueless/> is only allowed in <leafNode>")
 
     nodedef_path = os.path.join(make_path(my_tmpl_dir), "node.def")
-    if not os.path.exists(nodedef_path):
+
+    # Only create the "node.def" file if it exists but is empty, or if it does
+    # not exist at all. An empty node.def file could be generated by XML paths
+    # that derive from one another bot having a common base structure like
+    # "protocols static"
+    if not os.path.exists(nodedef_path) or os.path.getsize(nodedef_path) == 0:
         with open(nodedef_path, "w") as f:
             f.write(make_node_def(props))
-    else:
-        # Something has already generated that file
-        pass
-
 
     if node_type == "node":
         inner_nodes = children.iterfind("*")
@@ -297,4 +341,8 @@ nodes = root.iterfind("*")
 for n in nodes:
     if n.tag == "syntaxVersion":
         continue
-    process_node(n, [output_dir])
+    try:
+        process_node(n, [output_dir])
+    except ValueError as e:
+        print(e)
+        sys.exit(1)

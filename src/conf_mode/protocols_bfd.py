@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019 VyOS maintainers and contributors
+# Copyright (C) 2019-2024 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -13,215 +13,91 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
 
-import sys
-import jinja2
-import copy
-import os
-import vyos.validate
-
-from vyos import ConfigError
 from vyos.config import Config
+from vyos.configverify import verify_vrf
+from vyos.template import is_ipv6
+from vyos.template import render_to_string
+from vyos.utils.network import is_ipv6_link_local
+from vyos import ConfigError
+from vyos import frr
+from vyos import airbag
+airbag.enable()
 
-config_file = r'/tmp/bfd.frr'
-
-# Please be careful if you edit the template.
-config_tmpl = """
-!
-bfd
-{% for peer in old_peers -%}
- no peer {{ peer.remote }}{% if peer.multihop %} multihop{% endif %}{% if peer.src_addr %} local-address {{ peer.src_addr }}{% endif %}{% if peer.src_if %} interface {{ peer.src_if }}{% endif %}
-{% endfor -%}
-!
-{% for peer in new_peers -%}
- peer {{ peer.remote }}{% if peer.multihop %} multihop{% endif %}{% if peer.src_addr %} local-address {{ peer.src_addr }}{% endif %}{% if peer.src_if %} interface {{ peer.src_if }}{% endif %}
- detect-multiplier {{ peer.multiplier }}
- receive-interval {{ peer.rx_interval }}
- transmit-interval {{ peer.tx_interval }}
- {% if peer.echo_mode %}echo-mode{% endif %}
- {% if peer.echo_interval != '' %}echo-interval {{ peer.echo_interval }}{% endif %}
- {% if not peer.shutdown %}no {% endif %}shutdown
-{% endfor -%}
-!
-"""
-
-default_config_data = {
-    'new_peers': [],
-    'old_peers' : []
-}
-
-# get configuration for BFD peer from proposed or effective configuration
-def get_bfd_peer_config(peer, conf_mode="proposed"):
-    conf = Config()
-    conf.set_level('protocols bfd peer {0}'.format(peer))
-
-    bfd_peer = {
-        'remote': peer,
-        'shutdown': False,
-        'src_if': '',
-        'src_addr': '',
-        'multiplier': '3',
-        'rx_interval': '300',
-        'tx_interval': '300',
-        'multihop': False,
-        'echo_interval': '',
-        'echo_mode': False,
-    }
-
-    # Check if individual peer is disabled
-    if conf_mode == "effective" and conf.exists_effective('shutdown'):
-        bfd_peer['shutdown'] = True
-    if conf_mode == "proposed" and conf.exists('shutdown'):
-        bfd_peer['shutdown'] = True
-
-    # Check if peer has a local source interface configured
-    if conf_mode == "effective" and conf.exists_effective('source interface'):
-        bfd_peer['src_if'] = conf.return_effective_value('source interface')
-    if conf_mode == "proposed" and conf.exists('source interface'):
-        bfd_peer['src_if'] = conf.return_value('source interface')
-
-    # Check if peer has a local source address configured - this is mandatory for IPv6
-    if conf_mode == "effective" and conf.exists_effective('source address'):
-        bfd_peer['src_addr'] = conf.return_effective_value('source address')
-    if conf_mode == "proposed" and conf.exists('source address'):
-        bfd_peer['src_addr'] = conf.return_value('source address')
-
-    # Tell BFD daemon that we should expect packets with TTL less than 254
-    # (because it will take more than one hop) and to listen on the multihop
-    # port (4784)
-    if conf_mode == "effective" and conf.exists_effective('multihop'):
-        bfd_peer['multihop'] = True
-    if conf_mode == "proposed" and conf.exists('multihop'):
-        bfd_peer['multihop'] = True
-
-    # Configures the minimum interval that this system is capable of receiving
-    # control packets. The default value is 300 milliseconds.
-    if conf_mode == "effective" and conf.exists_effective('interval receive'):
-        bfd_peer['rx_interval'] = conf.return_effective_value('interval receive')
-    if conf_mode == "proposed" and conf.exists('interval receive'):
-        bfd_peer['rx_interval'] = conf.return_value('interval receive')
-
-    # The minimum transmission interval (less jitter) that this system wants
-    # to use to send BFD control packets.
-    if conf_mode == "effective" and conf.exists_effective('interval transmit'):
-        bfd_peer['tx_interval'] = conf.return_effective_value('interval transmit')
-    if conf_mode == "proposed" and conf.exists('interval transmit'):
-        bfd_peer['tx_interval'] = conf.return_value('interval transmit')
-
-    # Configures the detection multiplier to determine packet loss. The remote
-    # transmission interval will be multiplied by this value to determine the
-    # connection loss detection timer. The default value is 3.
-    if conf_mode == "effective" and conf.exists_effective('interval multiplier'):
-        bfd_peer['multiplier'] = conf.return_effective_value('interval multiplier')
-    if conf_mode == "proposed" and conf.exists('interval multiplier'):
-        bfd_peer['multiplier'] = conf.return_value('interval multiplier')
-
-    # Configures the minimal echo receive transmission interval that this system is capable of handling
-    if conf_mode == "effective" and conf.exists_effective('interval echo-interval'):
-        bfd_peer['echo_interval'] = conf.return_effective_value('interval echo-interval')
-    if conf_mode == "proposed" and conf.exists('interval echo-interval'):
-        bfd_peer['echo_interval'] = conf.return_value('interval echo-interval')
-
-    # Enables or disables the echo transmission mode
-    if conf_mode == "effective" and conf.exists_effective('echo-mode'):
-        bfd_peer['echo_mode'] = True
-    if conf_mode == "proposed" and conf.exists('echo-mode'):
-        bfd_peer['echo_mode'] = True
-
-    return bfd_peer
-
-def get_config():
-    bfd = copy.deepcopy(default_config_data)
-    conf = Config()
-    if not (conf.exists('protocols bfd') or conf.exists_effective('protocols bfd')):
-        return None
+def get_config(config=None):
+    if config:
+        conf = config
     else:
-        conf.set_level('protocols bfd')
+        conf = Config()
+    base = ['protocols', 'bfd']
+    bfd = conf.get_config_dict(base, key_mangling=('-', '_'),
+                               get_first_key=True,
+                               no_tag_node_value_mangle=True)
+    # Bail out early if configuration tree does not exist
+    if not conf.exists(base):
+        return bfd
 
-    # as we have to use vtysh to talk to FRR we also need to know
-    # which peers are gone due to a config removal - thus we read in
-    # all peers (active or to delete)
-    for peer in conf.list_effective_nodes('peer'):
-        bfd['old_peers'].append(get_bfd_peer_config(peer, "effective"))
-
-    for peer in conf.list_nodes('peer'):
-        bfd['new_peers'].append(get_bfd_peer_config(peer))
-
-    # find deleted peers
-    set_new_peers = set(conf.list_nodes('peer'))
-    set_old_peers = set(conf.list_effective_nodes('peer'))
-    bfd['deleted_peers'] = set_old_peers - set_new_peers
+    bfd = conf.merge_defaults(bfd, recursive=True)
 
     return bfd
 
 def verify(bfd):
-    if bfd is None:
+    if not bfd:
         return None
 
-    # some variables to use later
-    conf = Config()
+    if 'peer' in bfd:
+        for peer, peer_config in bfd['peer'].items():
+            # IPv6 link local peers require an explicit local address/interface
+            if is_ipv6_link_local(peer):
+                if 'source' not in peer_config or len(peer_config['source']) < 2:
+                    raise ConfigError('BFD IPv6 link-local peers require explicit local address and interface setting')
 
-    for peer in bfd['new_peers']:
-        # IPv6 link local peers require an explicit local address/interface
-        if vyos.validate.is_ipv6_link_local(peer['remote']):
-            if not (peer['src_if'] and peer['src_addr']):
-                raise ConfigError('BFD IPv6 link-local peers require explicit local address and interface setting')
+            # IPv6 peers require an explicit local address
+            if is_ipv6(peer):
+                if 'source' not in peer_config or 'address' not in peer_config['source']:
+                    raise ConfigError('BFD IPv6 peers require explicit local address setting')
 
-        # IPv6 peers require an explicit local address
-        if vyos.validate.is_ipv6(peer['remote']):
-            if not peer['src_addr']:
-                raise ConfigError('BFD IPv6 peers require explicit local address setting')
+            if 'multihop' in peer_config:
+                # multihop require source address
+                if 'source' not in peer_config or 'address' not in peer_config['source']:
+                    raise ConfigError('BFD multihop require source address')
 
-        # multihop require source address
-        if peer['multihop'] and not peer['src_addr']:
-            raise ConfigError('Multihop require source address')
+                # multihop and echo-mode cannot be used together
+                if 'echo_mode' in peer_config:
+                    raise ConfigError('BFD multihop and echo-mode cannot be used together')
 
-        # multihop and echo-mode cannot be used together
-        if peer['multihop'] and peer['echo_mode']:
-            raise ConfigError('Multihop and echo-mode cannot be used together')
+                # multihop doesn't accept interface names
+                if 'source' in peer_config and 'interface' in peer_config['source']:
+                    raise ConfigError('BFD multihop and source interface cannot be used together')
 
-        # multihop doesn't accept interface names
-        if peer['multihop'] and peer['src_if']:
-            raise ConfigError('Multihop and source interface cannot be used together')
+            if 'minimum_ttl' in peer_config and 'multihop' not in peer_config:
+                raise ConfigError('Minimum TTL is only available for multihop BFD sessions!')
 
-        # echo interval can be configured only with enabled echo-mode
-        if peer['echo_interval'] != '' and not peer['echo_mode']:
-            raise ConfigError('echo-interval can be configured only with enabled echo-mode')
+            if 'profile' in peer_config:
+                profile_name = peer_config['profile']
+                if 'profile' not in bfd or profile_name not in bfd['profile']:
+                    raise ConfigError(f'BFD profile "{profile_name}" does not exist!')
 
-    # check if we deleted peers are not used in configuration
-    if conf.exists('protocols bgp'):
-        bgp_as = conf.list_nodes('protocols bgp')[0]
-
-        # check BGP neighbors
-        for peer in bfd['deleted_peers']:
-            if conf.exists('protocols bgp {0} neighbor {1} bfd'.format(bgp_as, peer)):
-                raise ConfigError('Cannot delete BFD peer {0}: it is used in BGP configuration'.format(peer))
-            if conf.exists('protocols bgp {0} neighbor {1} peer-group'.format(bgp_as, peer)):
-                peer_group = conf.return_value('protocols bgp {0} neighbor {1} peer-group'.format(bgp_as, peer))
-                if conf.exists('protocols bgp {0} peer-group {1} bfd'.format(bgp_as, peer_group)):
-                    raise ConfigError('Cannot delete BFD peer {0}: it belongs to BGP peer-group {1} with enabled BFD'.format(peer, peer_group))
+            if 'vrf' in peer_config:
+                verify_vrf(peer_config)
 
     return None
 
 def generate(bfd):
-    if bfd is None:
+    if not bfd:
         return None
-
-    return None
+    bfd['new_frr_config'] = render_to_string('frr/bfdd.frr.j2', bfd)
 
 def apply(bfd):
-    if bfd is None:
-        return None
+    bfd_daemon = 'bfdd'
 
-    tmpl = jinja2.Template(config_tmpl)
-    config_text = tmpl.render(bfd)
-    with open(config_file, 'w') as f:
-        f.write(config_text)
-
-    os.system("sudo vtysh -d bfdd -f " + config_file)
-    if os.path.exists(config_file):
-        os.remove(config_file)
+    # Save original configuration prior to starting any commit actions
+    frr_cfg = frr.FRRConfig()
+    frr_cfg.load_configuration(bfd_daemon)
+    frr_cfg.modify_section('^bfd', stop_pattern='^exit', remove_stop_mark=True)
+    if 'new_frr_config' in bfd:
+        frr_cfg.add_before(frr.default_add_before, bfd['new_frr_config'])
+    frr_cfg.commit_configuration(bfd_daemon)
 
     return None
 
@@ -233,4 +109,4 @@ if __name__ == '__main__':
         apply(c)
     except ConfigError as e:
         print(e)
-        sys.exit(1)
+        exit(1)

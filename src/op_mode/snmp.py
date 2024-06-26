@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018 VyOS maintainers and contributors
+# Copyright (C) 2018-2024 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -13,17 +13,12 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-# File: snmp.py
-# Purpose:
-#    Show SNMP community/remote hosts
-#    Used by the "run show snmp community" commands.
 
-import os
 import sys
 import argparse
 
 from vyos.config import Config
+from vyos.utils.process import call
 
 config_file_daemon = r'/etc/snmp/snmpd.conf'
 
@@ -53,7 +48,7 @@ def show_all():
 
 def show_community(c, h):
     print('Status of SNMP community {0} on {1}'.format(c, h), flush=True)
-    os.system('/usr/bin/snmpstatus -t1 -v1 -c {0} {1}'.format(c, h))
+    call('/usr/bin/snmpstatus -t1 -v1 -c {0} {1}'.format(c, h))
 
 if __name__ == '__main__':
     args = parser.parse_args()

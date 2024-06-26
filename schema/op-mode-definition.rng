@@ -29,7 +29,10 @@
   <start>
     <element name="interfaceDefinition">
       <zeroOrMore>
-        <ref name="node"/>
+        <choice>
+          <ref name="node"/>
+          <ref name="tagNode"/>
+        </choice>
       </zeroOrMore>
     </element>
   </start>
@@ -159,6 +162,11 @@
             <text/>
           </element>
         </zeroOrMore>
+        <optional>
+          <element name="imagePath">
+            <empty/>
+          </element>
+        </optional>
       </interleave>
     </element>
   </define>

@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+#
+# Copyright (C) 2021-2024 VyOS maintainers and contributors
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 or later as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Script called up strongswan to bring the VTI interface up/down based on
+# the state of the IPSec tunnel. Called as vti_up_down vti_intf_name
+
+import os
+import sys
+
+from syslog import syslog
+from syslog import openlog
+from syslog import LOG_PID
+from syslog import LOG_INFO
+
+from vyos.configquery import ConfigTreeQuery
+from vyos.configdict import get_interface_dict
+from vyos.ifconfig import VTIIf
+from vyos.utils.process import call
+from vyos.utils.network import get_interface_config
+
+if __name__ == '__main__':
+    verb = os.getenv('PLUTO_VERB')
+    connection = os.getenv('PLUTO_CONNECTION')
+    interface = sys.argv[1]
+
+    openlog(ident=f'vti-up-down', logoption=LOG_PID, facility=LOG_INFO)
+    syslog(f'Interface {interface} {verb} {connection}')
+
+    if verb in ['up-client', 'up-host']:
+        call('sudo ip route delete default table 220')
+
+    vti_link = get_interface_config(interface)
+
+    if not vti_link:
+        syslog(f'Interface {interface} not found')
+        sys.exit(0)
+
+    vti_link_up = (vti_link['operstate'] != 'DOWN' if 'operstate' in vti_link else False)
+
+    if verb in ['up-client', 'up-host']:
+        if not vti_link_up:
+            conf = ConfigTreeQuery()
+            _, vti = get_interface_dict(conf.config, ['interfaces', 'vti'], interface)
+            if 'disable' not in vti:
+                tmp = VTIIf(interface)
+                tmp.update(vti)
+                call(f'sudo ip link set {interface} up')
+            else:
+                call(f'sudo ip link set {interface} down')
+                syslog(f'Interface {interface} is admin down ...')
+    elif verb in ['down-client', 'down-host']:
+        if vti_link_up:
+            call(f'sudo ip link set {interface} down')
