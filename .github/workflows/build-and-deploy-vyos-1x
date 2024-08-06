@@ -1,0 +1,40 @@
+name: Build and Deploy vyos-1x Package
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+
+# env:
+#   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build-and-deploy:
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    container: vyos-build
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Build VyOS package
+      run: |
+        cd vyos-1x
+        debuild -us -uc -b
+
+    - name: Send package via SSH to Aptly
+      # env:
+      #   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      #   APTLY_SERVER: ${{ secrets.APTLY_SERVER }}
+      #   APTLY_USER: ${{ secrets.APTLY_USER }}
+      #   DEST_DIR: ${{ secrets.DEST_DIR }}
+      run: |
+        # mkdir -p ~/.ssh
+        # echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        # chmod 600 ~/.ssh/id_rsa
+        # ssh-keyscan $APTLY_SERVER >> ~/.ssh/known_hosts
+        # scp ../*.deb $APTLY_USER@$APTLY_SERVER:$DEST_DIR
+        ls -la
+        ls -la ../
