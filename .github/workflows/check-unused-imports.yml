@@ -1,14 +1,16 @@
 name: Check for unused imports using Pylint
 on:
-  pull_request:
+  pull_request_target:
     branches:
       - current
-      - equuleus
-      - sagitta
-      - circinus
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!**/*.md'
   workflow_dispatch:
 
 permissions:
+  pull-requests: write
   contents: read
 
 jobs:

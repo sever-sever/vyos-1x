@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020 VyOS maintainers and contributors
+# Copyright (C) 2020-2024 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -14,15 +14,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
 
 from ipaddress import IPv4Address
 from sys import exit
 
 from vyos import ConfigError
+from vyos import frr
 from vyos.config import Config
-from vyos.utils.process import call
-from vyos.template import render
+from vyos.template import render_to_string
 
 from vyos import airbag
 airbag.enable()
@@ -92,22 +91,38 @@ def verify(mroute):
         if IPv4Address(route[0]) < IPv4Address('224.0.0.0'):
             raise ConfigError(route + " not a multicast network")
 
+
 def generate(mroute):
     if mroute is None:
         return None
 
-    render(config_file, 'frr/static_mcast.frr.j2', mroute)
+    mroute['new_frr_config'] = render_to_string('frr/static_mcast.frr.j2', mroute)
     return None
+
 
 def apply(mroute):
     if mroute is None:
         return None
+    static_daemon = 'staticd'
 
-    if os.path.exists(config_file):
-        call(f'vtysh -d staticd -f {config_file}')
-        os.remove(config_file)
+    frr_cfg = frr.FRRConfig()
+    frr_cfg.load_configuration(static_daemon)
+
+    if 'old_mroute' in mroute:
+        for route_gr in mroute['old_mroute']:
+            for nh in mroute['old_mroute'][route_gr]:
+                if mroute['old_mroute'][route_gr][nh]:
+                    frr_cfg.modify_section(f'^ip mroute {route_gr} {nh} {mroute["old_mroute"][route_gr][nh]}')
+                else:
+                    frr_cfg.modify_section(f'^ip mroute {route_gr} {nh}')
+
+    if 'new_frr_config' in mroute:
+        frr_cfg.add_before(frr.default_add_before, mroute['new_frr_config'])
+
+    frr_cfg.commit_configuration(static_daemon)
 
     return None
+
 
 if __name__ == '__main__':
     try:

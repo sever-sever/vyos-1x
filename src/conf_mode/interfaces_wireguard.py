@@ -103,7 +103,12 @@ def verify(wireguard):
 
         public_keys.append(peer['public_key'])
 
+def generate(wireguard):
+    return None
+
 def apply(wireguard):
+    check_kmod('wireguard')
+
     if 'rebuild_required' in wireguard or 'deleted' in wireguard:
         wg = WireGuardIf(**wireguard)
         # WireGuard only supports peer removal based on the configured public-key,
@@ -123,7 +128,6 @@ def apply(wireguard):
 
 if __name__ == '__main__':
     try:
-        check_kmod('wireguard')
         c = get_config()
         verify(c)
         apply(c)

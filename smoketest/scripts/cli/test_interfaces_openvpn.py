@@ -123,7 +123,7 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
         interface = 'vtun2000'
         path = base_path + [interface]
         self.cli_set(path + ['mode', 'client'])
-        self.cli_set(path + ['encryption', 'ncp-ciphers', 'aes192gcm'])
+        self.cli_set(path + ['encryption', 'data-ciphers', 'aes192gcm'])
 
         # check validate() - cannot specify local-port in client mode
         self.cli_set(path + ['local-port', '5000'])
@@ -197,7 +197,7 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
             auth_hash = 'sha1'
 
             self.cli_set(path + ['device-type', 'tun'])
-            self.cli_set(path + ['encryption', 'ncp-ciphers', 'aes256'])
+            self.cli_set(path + ['encryption', 'data-ciphers', 'aes256'])
             self.cli_set(path + ['hash', auth_hash])
             self.cli_set(path + ['mode', 'client'])
             self.cli_set(path + ['persistent-tunnel'])
@@ -371,7 +371,7 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
             port = str(2000 + ii)
 
             self.cli_set(path + ['device-type', 'tun'])
-            self.cli_set(path + ['encryption', 'ncp-ciphers', 'aes192'])
+            self.cli_set(path + ['encryption', 'data-ciphers', 'aes192'])
             self.cli_set(path + ['hash', auth_hash])
             self.cli_set(path + ['mode', 'server'])
             self.cli_set(path + ['local-port', port])
@@ -462,8 +462,8 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
 
         self.cli_set(path + ['mode', 'site-to-site'])
 
-        # check validate() - encryption ncp-ciphers cannot be specified in site-to-site mode
-        self.cli_set(path + ['encryption', 'ncp-ciphers', 'aes192gcm'])
+        # check validate() - cipher negotiation cannot be enabled in site-to-site mode
+        self.cli_set(path + ['encryption', 'data-ciphers', 'aes192gcm'])
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
         self.cli_delete(path + ['encryption'])
@@ -626,6 +626,57 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
             interface = f'vtun{ii}'
             self.assertNotIn(interface, interfaces())
 
+
+    def test_openvpn_server_server_bridge(self):
+        # Create OpenVPN server interface using bridge.
+        # Validate configuration afterwards.
+        br_if = 'br0'
+        vtun_if = 'vtun5010'
+        auth_hash = 'sha256'
+        path = base_path + [vtun_if]
+        start_subnet = "192.168.0.100"
+        stop_subnet = "192.168.0.200"
+        mask_subnet = "255.255.255.0"
+        gw_subnet = "192.168.0.1"
+
+        self.cli_set(['interfaces', 'bridge', br_if, 'member', 'interface', vtun_if])
+        self.cli_set(path + ['device-type', 'tap'])
+        self.cli_set(path + ['encryption', 'data-ciphers', 'aes192'])
+        self.cli_set(path + ['hash', auth_hash])
+        self.cli_set(path + ['mode', 'server'])
+        self.cli_set(path + ['server', 'bridge', 'gateway', gw_subnet])
+        self.cli_set(path + ['server', 'bridge', 'start', start_subnet])
+        self.cli_set(path + ['server', 'bridge', 'stop', stop_subnet])
+        self.cli_set(path + ['server', 'bridge', 'subnet-mask', mask_subnet])
+        self.cli_set(path + ['keep-alive', 'failure-count', '5'])
+        self.cli_set(path + ['keep-alive', 'interval', '5'])
+        self.cli_set(path + ['tls', 'ca-certificate', 'ovpn_test'])
+        self.cli_set(path + ['tls', 'certificate', 'ovpn_test'])
+        self.cli_set(path + ['tls', 'dh-params', 'ovpn_test'])
+
+        self.cli_commit()
+
+        config_file = f'/run/openvpn/{vtun_if}.conf'
+        config = read_file(config_file)
+        self.assertIn(f'dev {vtun_if}', config)
+        self.assertIn(f'dev-type tap', config)
+        self.assertIn(f'proto udp', config) # default protocol
+        self.assertIn(f'auth {auth_hash}', config)
+        self.assertIn(f'data-ciphers AES-192-CBC', config)
+        self.assertIn(f'mode server', config)
+        self.assertIn(f'server-bridge {gw_subnet} {mask_subnet} {start_subnet} {stop_subnet}', config)
+        self.assertIn(f'keepalive 5 25', config)
+
+        # TLS options
+        self.assertIn(f'ca /run/openvpn/{vtun_if}_ca.pem', config)
+        self.assertIn(f'cert /run/openvpn/{vtun_if}_cert.pem', config)
+        self.assertIn(f'key /run/openvpn/{vtun_if}_cert.key', config)
+        self.assertIn(f'dh /run/openvpn/{vtun_if}_dh.pem', config)
+
+        # check that no interface remained after deleting them
+        self.cli_delete(['interfaces', 'bridge', br_if, 'member', 'interface', vtun_if])
+        self.cli_delete(base_path)
+        self.cli_commit()
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

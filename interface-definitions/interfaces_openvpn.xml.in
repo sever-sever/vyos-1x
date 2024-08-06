@@ -87,7 +87,7 @@
                   </constraint>
                 </properties>
               </leafNode>
-              <leafNode name="ncp-ciphers">
+              <leafNode name="data-ciphers">
                 <properties>
                   <help>Cipher negotiation list for use in server or client mode</help>
                   <completionHelp>
@@ -445,6 +445,62 @@
                   </leafNode>
                 </children>
               </tagNode>
+              <node name="bridge">
+                <properties>
+                  <help>Used with TAP device (layer 2)</help>
+                </properties>
+                <children>
+                  #include <include/generic-disable-node.xml.i>
+                  <leafNode name="start">
+                    <properties>
+                      <help>First IP address in the pool</help>
+                      <constraint>
+                        <validator name="ipv4-address"/>
+                      </constraint>
+                      <valueHelp>
+                        <format>ipv4</format>
+                        <description>IPv4 address</description>
+                      </valueHelp>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="stop">
+                    <properties>
+                      <help>Last IP address in the pool</help>
+                      <constraint>
+                        <validator name="ipv4-address"/>
+                      </constraint>
+                      <valueHelp>
+                        <format>ipv4</format>
+                        <description>IPv4 address</description>
+                      </valueHelp>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="subnet-mask">
+                    <properties>
+                      <help>Subnet mask pushed to dynamic clients.</help>
+                      <constraint>
+                        <validator name="ipv4-address"/>
+                      </constraint>
+                      <valueHelp>
+                        <format>ipv4</format>
+                        <description>IPv4 subnet mask</description>
+                      </valueHelp>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="gateway">
+                    <properties>
+                      <help>Gateway IP address</help>
+                      <constraint>
+                        <validator name="ipv4-address"/>
+                      </constraint>
+                      <valueHelp>
+                        <format>ipv4</format>
+                        <description>IPv4 address</description>
+                      </valueHelp>
+                    </properties>
+                  </leafNode>
+                </children>
+              </node>
               <node name="client-ip-pool">
                 <properties>
                   <help>Pool of client IPv4 addresses</help>
@@ -589,25 +645,25 @@
                 <properties>
                   <help>Topology for clients</help>
                   <completionHelp>
-                    <list>net30 point-to-point subnet</list>
+                    <list>subnet point-to-point net30</list>
                   </completionHelp>
                   <valueHelp>
-                    <format>net30</format>
-                    <description>net30 topology</description>
+                    <format>subnet</format>
+                    <description>Subnet topology (recommended)</description>
                   </valueHelp>
                   <valueHelp>
                     <format>point-to-point</format>
                     <description>Point-to-point topology</description>
                   </valueHelp>
                   <valueHelp>
-                    <format>subnet</format>
-                    <description>Subnet topology</description>
+                    <format>net30</format>
+                    <description>net30 topology (deprecated)</description>
                   </valueHelp>
                   <constraint>
                     <regex>(subnet|point-to-point|net30)</regex>
                   </constraint>
                 </properties>
-                <defaultValue>net30</defaultValue>
+                <defaultValue>subnet</defaultValue>
               </leafNode>
               <node name="mfa">
                 <properties>

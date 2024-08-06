@@ -7,7 +7,6 @@
 #include <include/generic-disable-node.xml.i>
 #include <include/firewall/dscp.xml.i>
 #include <include/firewall/fragment.xml.i>
-#include <include/firewall/match-ipsec.xml.i>
 #include <include/firewall/limit.xml.i>
 #include <include/firewall/log.xml.i>
 #include <include/firewall/log-options.xml.i>
@@ -20,5 +19,6 @@
 #include <include/firewall/synproxy.xml.i>
 #include <include/firewall/tcp-flags.xml.i>
 #include <include/firewall/tcp-mss.xml.i>
+#include <include/firewall/gre.xml.i>
 #include <include/firewall/time.xml.i>
 <!-- include end -->

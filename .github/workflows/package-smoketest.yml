@@ -4,10 +4,20 @@ on:
   pull_request:
     branches:
       - current
-      - circinus
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!**/*.md'
+
+permissions:
+  pull-requests: write
+  contents: read
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needed for PR comments
 
 jobs:
-  build:
+  build_iso:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -26,9 +36,9 @@ jobs:
       - name: Clone vyos-1x source code
         uses: actions/checkout@v4
         with:
-          repository: vyos/vyos-1x
           path: packages/vyos-1x
-          fetch-tags: true # required for Debian package version
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Build vyos-1x package
         run: |
           cd packages/vyos-1x; dpkg-buildpackage -uc -us -tc -b
@@ -37,6 +47,7 @@ jobs:
         run: |
           echo "build_version=1.5-integration-$(date -u +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
       - name: Build custom ISO image
+        shell: bash
         run: |
           sudo --preserve-env ./build-vyos-image \
           --architecture amd64 \
@@ -50,13 +61,15 @@ jobs:
           name: vyos-${{ steps.version.outputs.build_version }}
           path: build/live-image-amd64.hybrid.iso
 
-  cli-smoketests:
-    needs: build
+  test_smoketest_cli:
+    needs: build_iso
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     container:
       image: vyos/vyos-build:current
       options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
+    outputs:
+      exit_code: ${{ steps.test.outputs.exit_code }}
     steps:
       # We need the test script from vyos-build repo
       - name: Clone vyos-build source code
@@ -65,27 +78,29 @@ jobs:
           repository: vyos/vyos-build
       - uses: actions/download-artifact@v4
         with:
-          name: vyos-${{ needs.build.outputs.build_version }}
+          name: vyos-${{ needs.build_iso.outputs.build_version }}
           path: build
       - name: VyOS CLI smoketests
-        run: sudo make test
-      - name: Add PR comment
-        if: always()
-        uses: mshick/add-pr-comment@v2
-        with:
-          message-success: '👍 VyOS CLI smoketests finished successfully!'
-          message-failure: '❌ VyOS CLI smoketests failed!'
-          message-cancelled: '❌ VyOS CLI smoketests cancelled!'
-          allow-repeats: false
-          refresh-message-position: true
+        id: test
+        shell: bash
+        run: |
+          set -e
+          sudo make test
+          if [[ $? == 0 ]]; then
+            echo "exit_code=success" >> $GITHUB_OUTPUT
+          else
+            echo "exit_code=fail" >> $GITHUB_OUTPUT
+          fi
 
-  config-load-tests:
-    needs: build
+  test_config_load:
+    needs: build_iso
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
       image: vyos/vyos-build:current
       options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
+    outputs:
+      exit_code: ${{ steps.test.outputs.exit_code }}
     steps:
       # We need the test script from vyos-build repo
       - name: Clone vyos-build source code
@@ -94,27 +109,29 @@ jobs:
           repository: vyos/vyos-build
       - uses: actions/download-artifact@v4
         with:
-          name: vyos-${{ needs.build.outputs.build_version }}
+          name: vyos-${{ needs.build_iso.outputs.build_version }}
           path: build
-      - name: VyOS config tests
-        run: sudo make testc
-      - name: Add PR comment
-        if: always()
-        uses: mshick/add-pr-comment@v2
-        with:
-          message-success: '👍 VyOS config tests finished successfully!'
-          message-failure: '❌ VyOS config tests failed!'
-          message-cancelled: '❌ VyOS config tests cancelled!'
-          allow-repeats: false
-          refresh-message-position: true
+      - name: VyOS config load tests
+        id: test
+        shell: bash
+        run: |
+          set -e
+          sudo make testc
+          if [[ $? == 0 ]]; then
+            echo "exit_code=success" >> $GITHUB_OUTPUT
+          else
+            echo "exit_code=fail" >> $GITHUB_OUTPUT
+          fi
 
-  raid1-install-test:
-    needs: build
+  test_raid1_install:
+    needs: build_iso
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     container:
       image: vyos/vyos-build:current
       options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
+    outputs:
+      exit_code: ${{ steps.test.outputs.exit_code }}
     steps:
       # We need the test script from vyos-build repo
       - name: Clone vyos-build source code
@@ -123,16 +140,44 @@ jobs:
           repository: vyos/vyos-build
       - uses: actions/download-artifact@v4
         with:
-          name: vyos-${{ needs.build.outputs.build_version }}
+          name: vyos-${{ needs.build_iso.outputs.build_version }}
           path: build
-      - name: VyOS RAID1 install test
-        run: sudo make testraid
+      - name: VyOS RAID1 installation tests
+        id: test
+        shell: bash
+        run: |
+          set -e
+          sudo make testraid
+          if [[ $? == 0 ]]; then
+            echo "exit_code=success" >> $GITHUB_OUTPUT
+          else
+            echo "exit_code=fail" >> $GITHUB_OUTPUT
+          fi
+
+  result:
+    needs:
+      - test_smoketest_cli
+      - test_config_load
+      - test_raid1_install
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: always()
+    steps:
       - name: Add PR comment
         if: always()
         uses: mshick/add-pr-comment@v2
         with:
-          message-success: '👍 RAID1 Smoketests finished successfully!'
-          message-failure: '❌ RAID1 Smoketests failed!'
-          message-cancelled: '❌ RAID1 action cancelled!'
+          message: |
+            CI integration ${{ needs.test_smoketest_cli.outputs.exit_code == 'success' && needs.test_config_load.outputs.exit_code == 'success' && needs.test_raid1_install.outputs.exit_code == 'success' && '👍 passed!' || '❌ failed!' }}
+
+            ### Details
+
+            [CI logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            * CLI Smoketests ${{ needs.test_smoketest_cli.outputs.exit_code == 'success' && '👍 passed' || '❌ failed' }}
+            * Config tests ${{ needs.test_config_load.outputs.exit_code == 'success' && '👍 passed' || '❌ failed' }}
+            * RAID1 tests ${{ needs.test_raid1_install.outputs.exit_code == 'success' && '👍 passed' || '❌ failed' }}
+
+          message-id: "SMOKETEST_RESULTS"
           allow-repeats: false
           refresh-message-position: true

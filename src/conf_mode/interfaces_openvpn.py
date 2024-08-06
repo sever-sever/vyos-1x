@@ -235,10 +235,6 @@ def verify_pki(openvpn):
 
 def verify(openvpn):
     if 'deleted' in openvpn:
-        # remove totp secrets file if totp is not configured
-        if os.path.isfile(otp_file.format(**openvpn)):
-            os.remove(otp_file.format(**openvpn))
-
         verify_bridge_delete(openvpn)
         return None
 
@@ -326,8 +322,8 @@ def verify(openvpn):
             if v4addr in openvpn['local_address'] and 'subnet_mask' not in openvpn['local_address'][v4addr]:
                 raise ConfigError('Must specify IPv4 "subnet-mask" for local-address')
 
-        if dict_search('encryption.ncp_ciphers', openvpn):
-            raise ConfigError('NCP ciphers can only be used in client or server mode')
+        if dict_search('encryption.data_ciphers', openvpn):
+            raise ConfigError('Cipher negotiation can only be used in client or server mode')
 
     else:
         # checks for client-server or site-to-site bridged
@@ -382,6 +378,22 @@ def verify(openvpn):
                 if (client_v.get('ip') and len(client_v['ip']) > 1) or (client_v.get('ipv6_ip') and len(client_v['ipv6_ip']) > 1):
                     raise ConfigError(f'Server client "{client_k}": cannot specify more than 1 IPv4 and 1 IPv6 IP')
 
+        if dict_search('server.bridge', openvpn):
+            # check if server bridge is a tap interfaces
+            if not openvpn['device_type'] == 'tap' and dict_search('server.bridge', openvpn):
+               raise ConfigError('Must specify "device-type tap" with server bridge mode')
+            elif not (dict_search('server.bridge.start', openvpn) and dict_search('server.bridge.stop', openvpn)):
+                raise ConfigError('Server bridge requires both start and stop addresses')
+            else:
+                v4PoolStart = IPv4Address(dict_search('server.bridge.start', openvpn))
+                v4PoolStop = IPv4Address(dict_search('server.bridge.stop', openvpn))
+                if v4PoolStart > v4PoolStop:
+                    raise ConfigError(f'Server bridge start address {v4PoolStart} is larger than stop address {v4PoolStop}')
+
+                v4PoolSize = int(v4PoolStop) - int(v4PoolStart)
+                if v4PoolSize >= 65536:
+                    raise ConfigError(f'Server bridge is too large [{v4PoolStart} -> {v4PoolStop} = {v4PoolSize}], maximum is 65536 addresses.')
+
         if dict_search('server.client_ip_pool', openvpn):
             if not (dict_search('server.client_ip_pool.start', openvpn) and dict_search('server.client_ip_pool.stop', openvpn)):
                 raise ConfigError('Server client-ip-pool requires both start and stop addresses')
@@ -431,6 +443,13 @@ def verify(openvpn):
                             for v6PoolNet in v6PoolNets:
                                 if IPv6Address(client['ipv6_ip'][0]) in v6PoolNet:
                                     print(f'Warning: Client "{client["name"]}" IP {client["ipv6_ip"][0]} is in server IP pool, it is not reserved for this client.')
+
+        if 'topology' in openvpn['server']:
+            if openvpn['server']['topology'] == 'net30':
+                DeprecationWarning('Topology net30 is deprecated '\
+                                   'and will be removed in future VyOS versions. '\
+                                   'Switch to "subnet" or "p2p"'
+                )
 
         # add mfa users to the file the mfa plugin uses
         if dict_search('server.mfa.totp', openvpn):
@@ -517,7 +536,7 @@ def verify(openvpn):
 
         if dict_search('encryption.cipher', openvpn):
             raise ConfigError('"encryption cipher" option is deprecated for TLS mode. '
-                              'Use "encryption ncp-ciphers" instead')
+                              'Use "encryption data-ciphers" instead')
 
     if dict_search('encryption.cipher', openvpn) == 'none':
         print('Warning: "encryption none" was specified!')
@@ -628,9 +647,19 @@ def generate_pki_files(openvpn):
 
 
 def generate(openvpn):
+    if 'deleted' in openvpn:
+        # remove totp secrets file if totp is not configured
+        if os.path.isfile(otp_file.format(**openvpn)):
+            os.remove(otp_file.format(**openvpn))
+        return None
+
+    if 'disable' in openvpn:
+        return None
+
     interface = openvpn['ifname']
     directory = os.path.dirname(cfg_file.format(**openvpn))
     openvpn['plugin_dir'] = '/usr/lib/openvpn'
+
     # create base config directory on demand
     makedir(directory, user, group)
     # enforce proper permissions on /run/openvpn
@@ -646,9 +675,6 @@ def generate(openvpn):
     service_dir = os.path.dirname(service_file.format(**openvpn))
     if os.path.isdir(service_dir):
         rmtree(service_dir, ignore_errors=True)
-
-    if 'deleted' in openvpn or 'disable' in openvpn:
-        return None
 
     # create client config directory on demand
     makedir(ccd_dir, user, group)
