@@ -63,6 +63,40 @@ def clone_or_update_repo(repo_dir: Path, scm_url: str, commit_id: str) -> None:
         run(['git', 'checkout', commit_id], cwd=repo_dir, check=True)
 
 
+def create_tarball(package_name, source_dir=None):
+    """Creates a .tar.gz archive of the specified directory.
+
+    Args:
+        package_name (str): The name of the package. This will also be the name of the output tarball.
+        source_dir (str, optional): The directory to be archived. If not provided, defaults to `package_name`.
+
+    Raises:
+        FileNotFoundError: If the specified `source_dir` does not exist.
+        Exception: If an error occurs during tarball creation.
+
+    Example:
+        >>> create_tarball("linux-6.6.56")
+        I: Tarball created: linux-6.6.56.tar.gz
+
+        >>> create_tarball("my-package", "/path/to/source")
+        I: Tarball created: my-package.tar.gz
+    """
+    # Use package_name as the source directory if source_dir is not provided
+    source_dir = source_dir or package_name
+    output_tarball = f"{package_name}.tar.gz"
+
+    # Check if the source directory exists
+    if not os.path.isdir(source_dir):
+        raise FileNotFoundError(f"Directory '{source_dir}' does not exist.")
+
+    # Create the tarball
+    try:
+        shutil.make_archive(base_name=output_tarball.replace('.tar.gz', ''), format='gztar', root_dir=source_dir)
+        print(f"I: Tarball created: {output_tarball}")
+    except Exception as e:
+        print(f"I: Failed to create tarball for {package_name}: {e}")
+
+
 def build_package(package: dict, dependencies: list) -> None:
     """Build a package from the repository
 
@@ -88,10 +122,13 @@ def build_package(package: dict, dependencies: list) -> None:
         # Execute the build command
         if package['build_cmd'] == 'build_kernel':
             build_kernel(package['kernel_version'])
+            create_tarball(f'{package["name"]}-{package["kernel_version"]}', f'linux-{package["kernel_version"]}')
         elif package['build_cmd'] == 'build_linux_firmware':
             build_linux_firmware(package['commit_id'], package['scm_url'])
+            create_tarball(f'{package["name"]}-{package["commit_id"]}', f'{package["name"]}')
         elif package['build_cmd'] == 'build_accel_ppp':
             build_accel_ppp(package['commit_id'], package['scm_url'])
+            create_tarball(f'{package["name"]}-{package["commit_id"]}', f'{package["name"]}')
         elif package['build_cmd'] == 'build_intel_qat':
             build_intel_qat()
         elif package['build_cmd'] == 'build_intel_ixgbe':
@@ -106,6 +143,7 @@ def build_package(package: dict, dependencies: list) -> None:
             build_jool()
         elif package['build_cmd'] == 'build_openvpn_dco':
             build_openvpn_dco(package['commit_id'], package['scm_url'])
+            create_tarball(f'{package["name"]}-{package["commit_id"]}', f'{package["name"]}')
         elif package['build_cmd'] == 'build_nat_rtsp':
             build_nat_rtsp(package['commit_id'], package['scm_url'])
         else:
