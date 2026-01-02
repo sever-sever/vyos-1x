@@ -27,12 +27,21 @@ submenu "Boot options" {
             export console_type
             configfile ${prefix}/grub.cfg.d/*vyos-menu*.cfg
         }
+{% if arch == 'aarch64' %}
+        menuentry "ttyAMA (serial)" {
+            set console_type="ttyAMA"
+            export console_type
+            setup_serial
+            configfile ${prefix}/grub.cfg.d/*vyos-menu*.cfg
+        }
+{% else %}
         menuentry "ttyS (serial)" {
             set console_type="ttyS"
             export console_type
             setup_serial
             configfile ${prefix}/grub.cfg.d/*vyos-menu*.cfg
         }
+{% endif %}
     }
     menuentry "Enter console number" {
         read console_num

@@ -17,6 +17,8 @@
 # You should have received a copy of the GNU General Public License along with
 # VyOS. If not, see <https://www.gnu.org/licenses/>.
 
+import platform
+
 from pathlib import Path
 from sys import exit
 
@@ -65,6 +67,7 @@ if __name__ == '__main__':
     # find default values
     default_entry = vyos_menuentries[int(vars['default'])]
     default_settings = {
+        'arch': platform.machine(),
         'default': grub.gen_version_uuid(default_entry['version']),
         'bootmode': default_entry['bootmode'],
         'console_type': default_entry['console_type'],
