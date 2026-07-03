@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -63,6 +63,9 @@ def verify(rtradv):
 
                 if not (int(valid_lifetime) >= int(preferred_lifetime)):
                     raise ConfigError('Prefix valid-lifetime must be greater then or equal to preferred-lifetime')
+
+                if 'base_interface' in prefix_config and prefix != '::/64':
+                    raise ConfigError('Prefix base-interface can only be used together with the wildcard prefix "::/64"')
 
         if 'nat64prefix' in interface_config:
             nat64_supported_lengths = [32, 40, 48, 56, 64, 96]

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -23,18 +23,9 @@ from tabulate import tabulate
 from vyos.utils.process import popen
 from vyos.configquery import ConfigTreeQuery
 
-def _verify(func):
-    """Decorator checks if Wireless LAN config exists"""
-    from functools import wraps
-
-    @wraps(func)
-    def _wrapper(*args, **kwargs):
-        config = ConfigTreeQuery()
-        if not config.exists(['interfaces', 'wireless']):
-            unconf_message = 'No Wireless interfaces configured'
-            raise vyos.opmode.UnconfiguredSubsystem(unconf_message)
-        return func(*args, **kwargs)
-    return _wrapper
+verify_path = ['interfaces', 'wireless']
+verify_error = 'Wireless/WiFi subsystem unconfigured!'
+verify_interface_error = 'Wireless interface {interface} is not configured!'
 
 def _get_raw_info_data():
     output_data = []
@@ -93,7 +84,7 @@ def _get_raw_scan_data(intf_name):
             ssid['ssid'] = line.lstrip().split(':')[-1].lstrip()
 
         elif line.lstrip().startswith('signal: '):
-            # Siganl can be "   signal: -67.00 dBm", thus strip all leading whitespaces
+            # Signal can be "   signal: -67.00 dBm", thus strip all leading whitespaces
             ssid['signal'] = line.lstrip().split(':')[-1].split()[0]
 
         elif line.lstrip().startswith('DS Parameter set: channel'):
@@ -156,7 +147,7 @@ def _format_station_data(raw_data):
     headers = ["Station", "Signal", "RX bytes", "RX packets", "TX bytes", "TX packets"]
     return tabulate(output, headers, numalign="left")
 
-@_verify
+@vyos.opmode.verify_cli_exists(verify_path, verify_error)
 def show_info(raw: bool):
     info_data = _get_raw_info_data()
     if raw:
@@ -169,7 +160,7 @@ def show_scan(raw: bool, intf_name: str):
         return data
     return _format_scan_data(data)
 
-@_verify
+@vyos.opmode.verify_cli_exists(verify_path, verify_interface_error)
 def show_stations(raw: bool, intf_name: str):
     data = _get_raw_station_data(intf_name)
     if raw:

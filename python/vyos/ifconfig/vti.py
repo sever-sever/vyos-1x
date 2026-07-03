@@ -1,4 +1,4 @@
-# Copyright 2021-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -15,11 +15,10 @@
 
 from vyos.ifconfig.interface import Interface
 from vyos.utils.dict import dict_search
-from vyos.utils.vti_updown_db import vti_updown_db_exists, open_vti_updown_db_readonly
+from vyos.utils.vti_updown_db import open_vti_updown_db_readonly
 
 @Interface.register
 class VTIIf(Interface):
-    iftype = 'vti'
     definition = {
         **Interface.definition,
         **{
@@ -65,14 +64,14 @@ class VTIIf(Interface):
         """
         Set interface administrative state to be 'up' or 'down'.
 
-        The interface will only be brought 'up' if ith is attached to an
+        The interface will only be brought 'up' if it is attached to an
         active ipsec site-to-site connection or remote access connection.
         """
         if state == 'down' or self.bypass_vti_updown_db:
             super().set_admin_state(state)
-        elif vti_updown_db_exists():
+        else:
             with open_vti_updown_db_readonly() as db:
-                if db.wantsInterfaceUp(self.ifname):
+                if db is not None and db.wantsInterfaceUp(self.ifname):
                     super().set_admin_state(state)
 
     def get_mac(self):

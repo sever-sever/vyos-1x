@@ -1,4 +1,4 @@
-# Copyright 2020 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -69,32 +69,32 @@ def getLogger(name=None, **kwargs):
 
 
 def _syslog(**kwargs):
-	formating = kwargs.get('format', SHORT)
+	formatting = kwargs.get('format', SHORT)
 	handler = handlers.SysLogHandler(
 		address=kwargs.get('address', '/dev/log'),
 		facility=kwargs.get('facility', 'syslog'),
 	)
-	handler.setFormatter(logging.Formatter(formating))
+	handler.setFormatter(logging.Formatter(formatting))
 	return handler
 
 
 def _stream(**kwargs):
-	formating = kwargs.get('format', CLEAR)
+	formatting = kwargs.get('format', CLEAR)
 	handler = logging.StreamHandler(
 		stream=kwargs.get('stream', sys.stderr),
 	)
-	handler.setFormatter(logging.Formatter(formating))
+	handler.setFormatter(logging.Formatter(formatting))
 	return handler
 
 
 def _file(**kwargs):
-	formating = kwargs.get('format', CLEAR)
+	formatting = kwargs.get('format', CLEAR)
 	handler = handlers.RotatingFileHandler(
 		filename=kwargs.get('filename', 1048576),
 		maxBytes=kwargs.get('maxBytes', 1048576),
 		backupCount=kwargs.get('backupCount', 3),
 	)
-	handler.setFormatter(logging.Formatter(formating))
+	handler.setFormatter(logging.Formatter(formatting))
 	return handler
 
 
@@ -120,11 +120,11 @@ syslog = getLogger(
 # testing
 if __name__ == '__main__':
 	# from vyos.logger import getLogger
-	formating = '%(asctime)s (%(filename)s) %(levelname)s: %(message)s'
+	formatting = '%(asctime)s (%(filename)s) %(levelname)s: %(message)s'
 
 	# syslog logger
 	# syslog=True if no 'address' field is provided
-	syslog = getLogger(__name__ + '.1', syslog=True, format=formating)
+	syslog = getLogger(__name__ + '.1', syslog=True, format=formatting)
 	syslog.info('syslog test')
 
 	# steam logger

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -16,6 +16,9 @@
 
 import unittest
 
+from base_interfaces_test import BasicInterfaceTest
+from base_vyostest_shim import VyOSUnitTestSHIM
+
 from vyos.configsession import ConfigSessionError
 from vyos.ifconfig import Interface
 from vyos.ifconfig import Section
@@ -25,7 +28,6 @@ from vyos.utils.network import interface_exists
 from vyos.utils.network import get_vxlan_vlan_tunnels
 from vyos.utils.network import get_vxlan_vni_filter
 from vyos.template import is_ipv6
-from base_interfaces_test import BasicInterfaceTest
 
 def convert_to_list(ranges_to_convert):
     result_list = []
@@ -114,13 +116,37 @@ class VXLANInterfaceTest(BasicInterfaceTest.TestCase):
             self.assertEqual(Interface(interface).get_admin_state(), 'up')
             ttl += 10
 
+
+    def test_vxlan_group_remote_error(self):
+        intf = 'vxlan60'
+        options = [
+            'group 239.4.4.5',
+            'mtu 1420',
+            'remote 192.168.0.254',
+            'source-address 192.168.0.1',
+            'source-interface eth0',
+            'vni 60'
+        ]
+        for option in options:
+            opts = option.split()
+            self.cli_set(self._base_path + [intf] + opts)
+
+        # verify() - Both group and remote cannot be specified
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        # Remove blocking CLI option
+        self.cli_delete(self._base_path + [intf, 'group'])
+        self.cli_commit()
+
+
     def test_vxlan_external(self):
         interface = 'vxlan0'
         source_address = '192.0.2.1'
         self.cli_set(self._base_path + [interface, 'parameters', 'external'])
         self.cli_set(self._base_path + [interface, 'source-address', source_address])
 
-        # Both 'VNI' and 'external' can not be specified at the same time.
+        # Both 'VNI' and 'external' cannot be specified at the same time.
         self.cli_set(self._base_path + [interface, 'vni', '111'])
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
@@ -363,4 +389,4 @@ class VXLANInterfaceTest(BasicInterfaceTest.TestCase):
         self.cli_delete(['interfaces', 'bridge', bridge])
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

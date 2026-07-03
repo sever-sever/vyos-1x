@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,8 +19,10 @@ import unittest
 from base_vyostest_shim import VyOSUnitTestSHIM
 
 from vyos.configsession import ConfigSessionError
+from vyos.utils.file import read_file
 from vyos.utils.process import cmd
 from vyos.utils.process import process_named_running
+from vyos.xml_ref import default_value
 
 PROCESS_NAME = 'chronyd'
 NTP_CONF = '/run/chrony/chrony.conf'
@@ -37,11 +39,12 @@ class TestSystemNTP(VyOSUnitTestSHIM.TestCase):
 
     def tearDown(self):
         self.assertTrue(process_named_running(PROCESS_NAME))
-
         self.cli_delete(base_path)
         self.cli_commit()
-
+        # Check for no longer running process
         self.assertFalse(process_named_running(PROCESS_NAME))
+        # always forward to base class
+        super().tearDown()
 
     def test_base_options(self):
         # Test basic NTP support with multiple servers and their options
@@ -62,7 +65,7 @@ class TestSystemNTP(VyOSUnitTestSHIM.TestCase):
 
         # Check generated configuration
         # this file must be read with higher permissions
-        config = cmd(f'sudo cat {NTP_CONF}')
+        config = read_file(NTP_CONF, sudo=True)
         self.assertIn('driftfile /run/chrony/drift', config)
         self.assertIn('dumpdir /run/chrony', config)
         self.assertIn('ntsdumpdir /run/chrony', config)
@@ -77,6 +80,18 @@ class TestSystemNTP(VyOSUnitTestSHIM.TestCase):
         for pool in pools:
             self.assertIn(f'pool {pool} iburst', config)
 
+    def test_local_stratum_without_upstream_server(self):
+        stratum = '10'
+        network = '192.0.2.0/24'
+
+        self.cli_set(base_path + ['local-stratum', stratum])
+        self.cli_set(base_path + ['allow-client', 'address', network])
+        self.cli_commit()
+
+        config = read_file(NTP_CONF, sudo=True)
+        self.assertIn(f'local stratum {stratum}', config)
+        self.assertIn(f'allow {network}', config)
+
     def test_clients(self):
         # Test the allowed-networks statement
         listen_address = ['127.0.0.1', '::1']
@@ -87,19 +102,10 @@ class TestSystemNTP(VyOSUnitTestSHIM.TestCase):
         for network in networks:
             self.cli_set(base_path + ['allow-client', 'address', network])
 
-        # Verify "NTP server not configured" verify() statement
-        with self.assertRaises(ConfigSessionError):
-            self.cli_commit()
-
-        servers = ['192.0.2.1', '192.0.2.2']
-        for server in servers:
-            self.cli_set(base_path + ['server', server])
-
         self.cli_commit()
 
         # Check generated client address configuration
-        # this file must be read with higher permissions
-        config = cmd(f'sudo cat {NTP_CONF}')
+        config = read_file(NTP_CONF, sudo=True)
         for network in networks:
             self.assertIn(f'allow {network}', config)
 
@@ -119,8 +125,7 @@ class TestSystemNTP(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
 
         # Check generated client address configuration
-        # this file must be read with higher permissions
-        config = cmd(f'sudo cat {NTP_CONF}')
+        config = read_file(NTP_CONF, sudo=True)
         for interface in interfaces:
             self.assertIn(f'binddevice {interface}', config)
 
@@ -150,14 +155,13 @@ class TestSystemNTP(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
 
         # Check generated client address configuration
-        # this file must be read with higher permissions
-        config = cmd(f'sudo cat {NTP_CONF}')
+        config = read_file(NTP_CONF, sudo=True)
         self.assertIn('leapsectz right/UTC', config) # CLI default
 
         for mode in ['ignore', 'system', 'smear']:
             self.cli_set(base_path + ['leap-second', mode])
             self.cli_commit()
-            config = cmd(f'sudo cat {NTP_CONF}')
+            config = read_file(NTP_CONF, sudo=True)
             if mode != 'smear':
                 self.assertIn(f'leapsecmode {mode}', config)
             else:
@@ -165,5 +169,96 @@ class TestSystemNTP(VyOSUnitTestSHIM.TestCase):
                 self.assertIn(f'maxslewrate 1000', config)
                 self.assertIn(f'smoothtime 400 0.001024 leaponly', config)
 
+    def test_interleave_option(self):
+        # "interleave" option differs from some others in that the
+        # name is not a 1:1 mapping from VyOS config
+        servers = ['192.0.2.1', '192.0.2.2']
+        options = ['prefer']
+
+        for server in servers:
+            for option in options:
+                self.cli_set(base_path + ['server', server, option])
+            self.cli_set(base_path + ['server', server, 'interleave'])
+
+        # commit changes
+        self.cli_commit()
+
+        # Check generated configuration
+        config = read_file(NTP_CONF, sudo=True)
+        self.assertIn('driftfile /run/chrony/drift', config)
+        self.assertIn('dumpdir /run/chrony', config)
+        self.assertIn('ntsdumpdir /run/chrony', config)
+        self.assertIn('clientloglimit 1048576', config)
+        self.assertIn('rtcsync', config)
+        self.assertIn('makestep 1.0 3', config)
+        self.assertIn('leapsectz right/UTC', config)
+
+        for server in servers:
+            self.assertIn(f'server {server} iburst ' + ' '.join(options) + ' xleave', config)
+
+    def test_offload_timestamp_default(self):
+        # Test offloading of NIC timestamp
+        servers = ['192.0.2.1', '192.0.2.2']
+        ptp_port = '8319'
+
+        for server in servers:
+            self.cli_set(base_path + ['server', server, 'ptp'])
+
+        self.cli_set(base_path + ['ptp', 'port', ptp_port])
+        self.cli_set(base_path + ['timestamp', 'interface', 'all'])
+
+        # commit changes
+        self.cli_commit()
+
+        # Check generated configuration
+        config = read_file(NTP_CONF, sudo=True)
+        self.assertIn('driftfile /run/chrony/drift', config)
+        self.assertIn('dumpdir /run/chrony', config)
+        self.assertIn('ntsdumpdir /run/chrony', config)
+        self.assertIn('clientloglimit 1048576', config)
+        self.assertIn('rtcsync', config)
+        self.assertIn('makestep 1.0 3', config)
+        self.assertIn('leapsectz right/UTC', config)
+
+        for server in servers:
+            self.assertIn(f'server {server} iburst port {ptp_port}', config)
+
+        self.assertIn('hwtimestamp *', config)
+
+    def test_ptp_transport(self):
+        # Test offloading of NIC timestamp
+        servers = ['192.0.2.1', '192.0.2.2']
+        options = ['prefer']
+
+        default_ptp_port = default_value(base_path + ['ptp', 'port'])
+
+        for server in servers:
+            for option in options:
+                self.cli_set(base_path + ['server', server, option])
+            self.cli_set(base_path + ['server', server, 'ptp'])
+
+        # commit changes (expected to fail)
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        # add the required top-level option and commit
+        self.cli_set(base_path + ['ptp'])
+        self.cli_commit()
+
+        # Check generated configuration
+        config = read_file(NTP_CONF, sudo=True)
+        self.assertIn('driftfile /run/chrony/drift', config)
+        self.assertIn('dumpdir /run/chrony', config)
+        self.assertIn('ntsdumpdir /run/chrony', config)
+        self.assertIn('clientloglimit 1048576', config)
+        self.assertIn('rtcsync', config)
+        self.assertIn('makestep 1.0 3', config)
+        self.assertIn('leapsectz right/UTC', config)
+
+        for server in servers:
+            self.assertIn(f'server {server} iburst ' + ' '.join(options) + f' port {default_ptp_port}', config)
+
+        self.assertIn(f'ptpport {default_ptp_port}', config)
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

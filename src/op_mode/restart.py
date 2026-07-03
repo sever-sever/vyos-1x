@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -25,12 +25,12 @@ from vyos.utils.commit import commit_in_progress
 config = ConfigTreeQuery()
 
 service_map = {
-    'dhcp' : {
-        'systemd_service': 'kea-dhcp4-server',
+    'dhcp': {
+        'systemd_service': 'isc-kea-dhcp4-server',
         'path': ['service', 'dhcp-server'],
     },
-    'dhcpv6' : {
-        'systemd_service': 'kea-dhcp6-server',
+    'dhcpv6': {
+        'systemd_service': 'isc-kea-dhcp6-server',
         'path': ['service', 'dhcpv6-server'],
     },
     'dns_dynamic': {
@@ -41,6 +41,10 @@ service_map = {
         'systemd_service': 'pdns-recursor',
         'path': ['service', 'dns', 'forwarding'],
     },
+    'haproxy': {
+        'systemd_service': 'haproxy',
+        'path': ['load-balancing', 'haproxy'],
+    },
     'igmp_proxy': {
         'systemd_service': 'igmpproxy',
         'path': ['protocols', 'igmp-proxy'],
@@ -49,36 +53,53 @@ service_map = {
         'systemd_service': 'strongswan',
         'path': ['vpn', 'ipsec'],
     },
+    'load-balancing_wan': {
+        'systemd_service': 'vyos-wan-load-balance',
+        'path': ['load-balancing', 'wan'],
+    },
     'mdns_repeater': {
         'systemd_service': 'avahi-daemon',
         'path': ['service', 'mdns', 'repeater'],
-    },
-    'reverse_proxy': {
-        'systemd_service': 'haproxy',
-        'path': ['load-balancing', 'reverse-proxy'],
     },
     'router_advert': {
         'systemd_service': 'radvd',
         'path': ['service', 'router-advert'],
     },
-    'snmp' : {
+    'snmp': {
         'systemd_service': 'snmpd',
     },
-    'ssh' : {
+    'ssh': {
         'systemd_service': 'ssh',
     },
-    'suricata' : {
+    'suricata': {
         'systemd_service': 'suricata',
     },
-    'vrrp' : {
+    'vrrp': {
         'systemd_service': 'keepalived',
         'path': ['high-availability', 'vrrp'],
     },
-    'webproxy' : {
+    'webproxy': {
         'systemd_service': 'squid',
     },
 }
-services = typing.Literal['dhcp', 'dhcpv6', 'dns_dynamic', 'dns_forwarding', 'igmp_proxy', 'ipsec', 'mdns_repeater', 'reverse_proxy', 'router_advert', 'snmp', 'ssh', 'suricata' 'vrrp', 'webproxy']
+services = typing.Literal[
+    'dhcp',
+    'dhcpv6',
+    'dns_dynamic',
+    'dns_forwarding',
+    'haproxy',
+    'igmp_proxy',
+    'ipsec',
+    'load-balancing_wan',
+    'mdns_repeater',
+    'router_advert',
+    'snmp',
+    'ssh',
+    'suricata',
+    'vrrp',
+    'webproxy',
+]
+
 
 def _verify(func):
     """Decorator checks if DHCP(v6) config exists"""
@@ -102,12 +123,17 @@ def _verify(func):
 
         # Check if config does not exist
         if not config.exists(path):
-            raise vyos.opmode.UnconfiguredSubsystem(f'Service {human_name} is not configured!')
+            raise vyos.opmode.UnconfiguredSubsystem(
+                f'Service {human_name} is not configured!'
+            )
         if config.exists(path + ['disable']):
-            raise vyos.opmode.UnconfiguredSubsystem(f'Service {human_name} is disabled!')
+            raise vyos.opmode.UnconfiguredSubsystem(
+                f'Service {human_name} is disabled!'
+            )
         return func(*args, **kwargs)
 
     return _wrapper
+
 
 @_verify
 def restart_service(raw: bool, name: services, vrf: typing.Optional[str]):
@@ -116,6 +142,7 @@ def restart_service(raw: bool, name: services, vrf: typing.Optional[str]):
         call(f'systemctl restart "{systemd_service}@{vrf}.service"')
     else:
         call(f'systemctl restart "{systemd_service}.service"')
+
 
 if __name__ == '__main__':
     try:

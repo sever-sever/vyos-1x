@@ -49,6 +49,53 @@
         <help>Apply configured firewall rules to traffic switched by bridges</help>
       </properties>
       <children>
+        <node name="accept-invalid">
+          <properties>
+            <help>Accept connections despite they are marked as invalid</help>
+          </properties>
+          <children>
+            <leafNode name="ethernet-type">
+              <properties>
+                <help>Ethernet type</help>
+                <completionHelp>
+                  <list>arp dhcp pppoe 802.1q 802.1ad pppoe-discovery wol</list>
+                </completionHelp>
+                <valueHelp>
+                  <format>arp</format>
+                  <description>Address Resolution Protocol (ARP)</description>
+                </valueHelp>
+                <valueHelp>
+                  <format>dhcp</format>
+                  <description>Dynamic Host Configuration Protocol (DHCP)</description>
+                </valueHelp>
+                <valueHelp>
+                  <format>pppoe</format>
+                  <description>Point to Point over Ethernet (PPPoE) Session</description>
+                </valueHelp>
+                <valueHelp>
+                  <format>pppoe-discovery</format>
+                  <description>PPPoE Discovery</description>
+                </valueHelp>
+                <valueHelp>
+                  <format>802.1q</format>
+                  <description>Customer VLAN tag type (802.1Q)</description>
+                </valueHelp>
+                <valueHelp>
+                  <format>802.1ad</format>
+                  <description>Service VLAN tag type (802.1ad)</description>
+                </valueHelp>
+                <valueHelp>
+                  <format>wol</format>
+                  <description>Wake-on-LAN magic packet</description>
+                </valueHelp>
+                <constraint>
+                  <regex>(arp|dhcp|pppoe|pppoe-discovery|802.1q|802.1ad|wol)</regex>
+                </constraint>
+                <multi/>
+              </properties>
+            </leafNode>
+          </children>
+        </node>
         <leafNode name="ipv4">
           <properties>
             <help>Apply configured IPv4 firewall rules</help>
@@ -83,6 +130,51 @@
       </properties>
       <defaultValue>enable</defaultValue>
     </leafNode>
+    <node name="geoip">
+      <properties>
+        <help>GeoIP options</help>
+      </properties>
+      <children>
+        <leafNode name="provider">
+          <properties>
+            <help>GeoIP database provider</help>
+            <completionHelp>
+              <list>db-ip maxmind</list>
+            </completionHelp>
+            <valueHelp>
+              <format>db-ip</format>
+              <description>Use GeoIP database by DB-IP.com</description>
+            </valueHelp>
+            <valueHelp>
+              <format>maxmind</format>
+              <description>Use GeoIP database by MaxMind (Requires API key)</description>
+            </valueHelp>
+            <constraint>
+              <regex>(db-ip|maxmind)</regex>
+            </constraint>
+          </properties>
+          <defaultValue>db-ip</defaultValue>
+        </leafNode>
+        <leafNode name="maxmind-account-id">
+          <properties>
+            <help>Account ID for MaxMind GeoIP database</help>
+          </properties>
+        </leafNode>
+        <leafNode name="maxmind-license-key">
+          <properties>
+            <help>License key for MaxMind GeoIP database</help>
+          </properties>
+        </leafNode>
+        <leafNode name="maxmind-lite">
+          <properties>
+            <help>Use MaxMind GeoLite2 database</help>
+            <valueless/>
+          </properties>
+        </leafNode>
+        #include <include/source-address-ipv4-ipv6.xml.i>
+        #include <include/interface/vrf.xml.i>
+      </children>
+    </node>
     <leafNode name="ip-src-route">
       <properties>
         <help>Policy for handling IPv4 packets with source route option</help>
@@ -211,6 +303,14 @@
         <help>Global firewall state-policy</help>
       </properties>
       <children>
+        <node name="offload">
+          <properties>
+            <help>All stateful forward traffic is offloaded to a flowtable</help>
+          </properties>
+          <children>
+            #include <include/firewall/offload-target.xml.i>
+          </children>
+        </node>
         <node name="established">
           <properties>
             <help>Global firewall policy for packets part of an established connection</help>
@@ -273,7 +373,7 @@
     </node>
     <leafNode name="twa-hazards-protection">
       <properties>
-        <help>RFC1337 TCP TIME-WAIT assasination hazards protection</help>
+        <help>RFC1337 TCP TIME-WAIT assassination hazards protection</help>
         <completionHelp>
           <list>enable disable</list>
         </completionHelp>

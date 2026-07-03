@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# Copyright 2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -133,9 +133,6 @@ def print_file_data(path: str) -> None:
         with open(path, 'r') as f:
             for line in f:
                 print(line, end='')
-    # tcpdump files go to TShark.
-    elif 'pcap' in file_type or os.path.splitext(path)[1] == '.pcap':
-        print(cmd(['sudo', 'tshark', '-r', path]))
     # All other binaries get hexdumped.
     else:
         print(cmd(['hexdump', '-C', path]))

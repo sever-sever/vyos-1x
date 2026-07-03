@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,9 +17,10 @@
 import os
 import re
 import unittest
+from glob import glob
 
 from base_interfaces_test import BasicInterfaceTest
-from glob import glob
+from base_interfaces_test import VyOSUnitTestSHIM
 
 from vyos.configsession import ConfigSessionError
 from vyos.utils.file import read_file
@@ -64,12 +65,22 @@ class WirelessInterfaceTest(BasicInterfaceTest.TestCase):
         # call base-classes classmethod
         super(WirelessInterfaceTest, cls).setUpClass()
 
-        # T5245 - currently testcases are disabled
-        cls._test_ipv6 = False
-        cls._test_vlan = False
+        # If any wireless interface is based on mac80211_hwsim, disable all
+        # VLAN related testcases. See T5245, T7325
+        tmp = read_file('/proc/modules')
+        if 'mac80211_hwsim' in tmp:
+            cls._test_ipv6 = False
+            cls._test_vlan = False
+            cls._test_qinq = False
+
+        # Loading mac80211_hwsim module created two WIFI Interfaces in the
+        # background (wlan0 and wlan1), remove them to have a clean test start.
+        # This must happen AFTER the above check for unsupported drivers
+        for interface in cls._interfaces:
+            if interface_exists(interface):
+                call(f'sudo iw dev {interface} del')
 
         cls.cli_set(cls, wifi_cc_path + [country])
-
 
     def test_wireless_add_single_ip_address(self):
         # derived method to check if member interfaces are enslaved properly
@@ -300,7 +311,89 @@ class WirelessInterfaceTest(BasicInterfaceTest.TestCase):
         for key, value in vht_opt.items():
             self.assertIn(value, tmp)
 
-    def test_wireless_hostapd_he_config(self):
+    def test_wireless_hostapd_he_2ghz_config(self):
+        # Only set the hostapd (access-point) options - HE mode for 802.11ax at 2.4GHz
+        interface = self._interfaces[1] # wlan1
+        ssid = 'ssid'
+        channel = '1'
+        sae_pw = 'VyOSVyOSVyOS'
+        bss_color = '13'
+        channel_set_width = '81'
+
+        self.cli_set(self._base_path + [interface, 'ssid', ssid])
+        self.cli_set(self._base_path + [interface, 'type', 'access-point'])
+        self.cli_set(self._base_path + [interface, 'channel', channel])
+        self.cli_set(self._base_path + [interface, 'mode', 'ax'])
+        self.cli_set(self._base_path + [interface, 'security', 'wpa', 'mode', 'wpa2'])
+        self.cli_set(self._base_path + [interface, 'security', 'wpa', 'passphrase', sae_pw])
+        self.cli_set(self._base_path + [interface, 'security', 'wpa', 'cipher', 'CCMP'])
+        self.cli_set(self._base_path + [interface, 'security', 'wpa', 'cipher', 'GCMP'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'ht', '40mhz-incapable'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'ht', 'channel-set-width', 'ht20'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'ht', 'channel-set-width', 'ht40+'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'ht', 'channel-set-width', 'ht40-'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'ht', 'short-gi', '20'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'ht', 'short-gi', '40'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'bss-color', bss_color])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'channel-set-width', channel_set_width])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'beamform', 'multi-user-beamformer'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'beamform', 'single-user-beamformer'])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'beamform', 'single-user-beamformee'])
+
+        self.cli_commit()
+
+        #
+        # Validate Config
+        #
+        tmp = get_config_value(interface, 'interface')
+        self.assertEqual(interface, tmp)
+
+        # ssid
+        tmp = get_config_value(interface, 'ssid')
+        self.assertEqual(ssid, tmp)
+
+        # mode of operation resulting from [interface, 'mode', 'ax']
+        tmp = get_config_value(interface, 'hw_mode')
+        self.assertEqual('g', tmp)
+        tmp = get_config_value(interface, 'ieee80211h')
+        self.assertEqual('1', tmp)
+        tmp = get_config_value(interface, 'ieee80211ax')
+        self.assertEqual('1', tmp)
+
+        # channel and channel width
+        tmp = get_config_value(interface, 'channel')
+        self.assertEqual(channel, tmp)
+        tmp = get_config_value(interface, 'op_class')
+        self.assertEqual(channel_set_width, tmp)
+
+        # BSS coloring
+        tmp = get_config_value(interface, 'he_bss_color')
+        self.assertEqual(bss_color, tmp)
+
+        # sae_password
+        tmp = get_config_value(interface, 'wpa_passphrase')
+        self.assertEqual(sae_pw, tmp)
+
+        # WPA3 and dependencies
+        tmp = get_config_value(interface, 'wpa')
+        self.assertEqual('2', tmp)
+        tmp = get_config_value(interface, 'rsn_pairwise')
+        self.assertEqual('CCMP GCMP', tmp)
+        tmp = get_config_value(interface, 'wpa_key_mgmt')
+        self.assertEqual('WPA-PSK WPA-PSK-SHA256', tmp)
+
+        # beamforming
+        tmp = get_config_value(interface, 'he_mu_beamformer')
+        self.assertEqual('1', tmp)
+        tmp = get_config_value(interface, 'he_su_beamformee')
+        self.assertEqual('1', tmp)
+        tmp = get_config_value(interface, 'he_mu_beamformer')
+        self.assertEqual('1', tmp)
+
+        # Check for running process
+        self.assertTrue(process_named_running('hostapd'))
+
+    def test_wireless_hostapd_he_6ghz_config(self):
         # Only set the hostapd (access-point) options - HE mode for 802.11ax at 6GHz
         interface = self._interfaces[1] # wlan1
         ssid = 'ssid'
@@ -323,6 +416,7 @@ class WirelessInterfaceTest(BasicInterfaceTest.TestCase):
         self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'bss-color', bss_color])
         self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'channel-set-width', channel_set_width])
         self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'center-channel-freq', 'freq-1', center_channel_freq_1])
+        self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'antenna-pattern-fixed'])
         self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'beamform', 'multi-user-beamformer'])
         self.cli_set(self._base_path + [interface, 'capabilities', 'he', 'beamform', 'single-user-beamformer'])
 
@@ -369,6 +463,10 @@ class WirelessInterfaceTest(BasicInterfaceTest.TestCase):
         self.assertEqual('CCMP GCMP', tmp)
         tmp = get_config_value(interface, 'wpa_key_mgmt')
         self.assertEqual('SAE', tmp)
+
+        # antenna pattern
+        tmp = get_config_value(interface, 'he_6ghz_rx_ant_pat')
+        self.assertEqual('1', tmp)
 
         # beamforming
         tmp = get_config_value(interface, 'he_mu_beamformer')
@@ -540,9 +638,4 @@ class WirelessInterfaceTest(BasicInterfaceTest.TestCase):
 
 if __name__ == '__main__':
     check_kmod('mac80211_hwsim')
-    # loading the module created two WIFI Interfaces in the background (wlan0 and wlan1)
-    # remove them to have a clean test start
-    for interface in ['wlan0', 'wlan1']:
-        if interface_exists(interface):
-            call(f'sudo iw dev {interface} del')
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

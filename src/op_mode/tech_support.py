@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -20,6 +20,7 @@ import json
 import vyos.opmode
 
 from vyos.utils.process import cmd
+from vyos.base import Warning
 
 def _get_version_data():
     from vyos.version import get_version_data
@@ -51,7 +52,12 @@ def _get_storage():
 def _get_devices():
     devices = {}
     devices["pci"] = cmd("lspci")
-    devices["usb"] = cmd("lsusb")
+
+    try:
+        devices["usb"] = cmd("lsusb")
+    except OSError:
+        Warning("Could not retrieve information about USB devices")
+        devices["usb"] = {}
 
     return devices
 
@@ -97,21 +103,22 @@ def _get_boot_config():
     return strip_config_source(config)
 
 def _get_config_scripts():
-    from os import listdir
+    from os import walk
     from os.path import join
     from vyos.utils.file import read_file
 
     scripts = []
 
     dir = '/config/scripts'
-    for f in listdir(dir):
-        script = {}
-        path = join(dir, f)
-        data = read_file(path)
-        script["path"] = path
-        script["data"] = data
+    for dirpath, _, filenames in walk(dir):
+        for filename in filenames:
+            script = {}
+            path = join(dirpath, filename)
+            data = read_file(path)
+            script["path"] = path
+            script["data"] = data
 
-        scripts.append(script)
+            scripts.append(script)
 
     return scripts
 

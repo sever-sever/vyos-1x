@@ -1,4 +1,4 @@
-# Copyright 2019-2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -29,15 +29,17 @@ class Control(Section):
     _command_get = {}
     _command_set = {}
     _signature = {}
+    config = {}
+    ifname = None
 
     def __init__(self, **kargs):
-        # some commands (such as operation comands - show interfaces, etc.)
+        # some commands (such as operation commands - show interfaces, etc.)
         # need to query the interface statistics. If the interface
         # code is used and the debugging is enabled, the screen output
         # will include both the command but also the debugging for that command
-        # to prevent this, debugging can be explicitely disabled
+        # to prevent this, debugging can be explicitly disabled
 
-        # if debug is not explicitely disabled the the config, enable it
+        # if debug is not explicitly disabled the the config, enable it
         self.debug = ''
         if kargs.get('debug', True) and debug.enabled('ifconfig'):
             self.debug = 'ifconfig'
@@ -48,7 +50,7 @@ class Control(Section):
     def _popen(self, command):
         return popen(command, self.debug)
 
-    def _cmd(self, command):
+    def _cmd(self, command, env=None):
         import re
         if 'netns' in self.config:
             # This command must be executed from default netns 'ip link set dev X netns X'
@@ -61,7 +63,21 @@ class Control(Section):
                 command = command
             else:
                 command = f'ip netns exec {self.config["netns"]} {command}'
-        return cmd(command, self.debug)
+        return cmd(command, self.debug, env=env)
+
+    def _cmdl(self, command, env=None):
+        from vyos.utils.process import cmdl
+        if not isinstance(command, list):
+            raise TypeError(f'_cmdl() requires a list, got {type(command).__name__}')
+        netns = self.config.get('netns')
+        vrf   = self.config.get('vrf')
+        # 'ip link set dev <ifname> netns <netns>' moves the interface into the
+        # namespace and must execute from the default netns — skip wrapping.
+        if (netns and command[:4] == ['ip', 'link', 'set', 'dev']
+                and 'netns' in command
+                and command[command.index('netns') + 1] == netns):
+            netns = None
+        return cmdl(command, self.debug, env=env, netns=netns, vrf=vrf)
 
     def _get_command(self, config, name):
         """
@@ -173,13 +189,13 @@ class Control(Section):
         if convert:
             value = convert(value)
 
-        commited = self._write_sysfs(
+        committed = self._write_sysfs(
             self._sysfs_set[name]['location'].format(**config), value)
-        if not commited:
+        if not committed:
             errmsg = self._sysfs_set.get('errormsg', '')
             if errmsg:
                 raise TypeError(errmsg.format(**config))
-        return commited
+        return committed
 
     def get_interface(self, name):
         if name in self._sysfs_get:

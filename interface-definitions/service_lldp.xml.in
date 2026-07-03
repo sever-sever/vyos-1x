@@ -23,9 +23,40 @@
                 <script>${vyos_completion_dir}/list_interfaces</script>
                 <list>all</list>
               </completionHelp>
+              <constraint>
+                #include <include/constraint/interface-name.xml.i>
+                <regex>all</regex>
+              </constraint>
             </properties>
             <children>
-              #include <include/generic-disable-node.xml.i>
+              <leafNode name="mode">
+                <properties>
+                  <help>Set LLDP receive/transmit operation mode of this interface</help>
+                  <completionHelp>
+                    <list>disable rx-tx tx rx</list>
+                  </completionHelp>
+                  <valueHelp>
+                    <format>disable</format>
+                    <description>Do not process or send LLDP messages</description>
+                  </valueHelp>
+                  <valueHelp>
+                    <format>rx-tx</format>
+                    <description>Send and process LLDP messages</description>
+                  </valueHelp>
+                  <valueHelp>
+                    <format>rx</format>
+                    <description>Process incoming LLDP messages</description>
+                  </valueHelp>
+                  <valueHelp>
+                    <format>tx</format>
+                    <description>Send LLDP messages</description>
+                  </valueHelp>
+                  <constraint>
+                    <regex>(disable|rx-tx|tx|rx)</regex>
+                  </constraint>
+                </properties>
+                <defaultValue>rx-tx</defaultValue>
+              </leafNode>
               <node name="location">
                 <properties>
                   <help>LLDP-MED location data</help>
@@ -111,7 +142,7 @@
                     <properties>
                       <help>ECS ELIN (Emergency location identifier number)</help>
                       <valueHelp>
-                        <format>u32:0-9999999999</format>
+                        <format>u64:0-9999999999</format>
                         <description>Emergency Call Service ELIN number (between 10-25 numbers)</description>
                       </valueHelp>
                       <constraint>

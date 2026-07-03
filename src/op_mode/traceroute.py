@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 
-# Copyright (C) 2022 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -85,7 +85,7 @@ options = {
         'help': 'Use TCP SYN for tracerouting (default port is 80)'
     },
     'tos': {
-        'traceroute': '{commad} -t {value}',
+        'traceroute': '{command} -t {value}',
         'type': '<tos>',
         'help': 'Mark packets with specified TOS'
     },
@@ -135,7 +135,7 @@ def completion_failure(option: str) -> None:
     sys.exit(1)
 
 
-def expension_failure(option, completions):
+def expansion_failure(option, completions):
     reason = 'Ambiguous' if completions else 'Invalid'
     sys.stderr.write(
         '\n\n  {} command: {} [{}]\n\n'.format(reason, ' '.join(sys.argv),
@@ -157,7 +157,7 @@ def convert(command, args):
         shortname = args.first()
         longnames = complete(shortname)
         if len(longnames) != 1:
-            expension_failure(shortname, longnames)
+            expansion_failure(shortname, longnames)
         longname = longnames[0]
         if options[longname]['type'] == 'noarg':
             command = options[longname]['traceroute'].format(
@@ -222,11 +222,23 @@ if __name__ == '__main__':
             args.append(name)
             args.append(option['dflt'])
 
+    af = socket.AF_UNSPEC
+    for i in range(len(args)):
+        matched = complete(args[i])
+        if len(matched) == 1 and matched[0] == 'source-address' and i + 1 < len(args):
+            try:
+                src_version = ipaddress.ip_address(args[i + 1]).version
+                af = socket.AF_INET6 if src_version == 6 else socket.AF_INET
+            except ValueError:
+                pass
+            break
+
     try:
-        ip = socket.gethostbyname(host)
+        info = socket.getaddrinfo(host, None, af, socket.SOCK_STREAM)
+        ip = info[0][4][0]
     except UnicodeError:
-        sys.exit(f'tracroute: Unknown host: {host}')
-    except socket.gaierror:
+        sys.exit(f'traceroute: Unknown host: {host}')
+    except OSError:
         ip = host
 
     try:

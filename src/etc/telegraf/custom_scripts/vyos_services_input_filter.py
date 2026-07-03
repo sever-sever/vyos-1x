@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -20,7 +20,7 @@ from vyos.configquery import ConfigTreeQuery
 from vyos.utils.process import is_systemd_service_running
 from vyos.utils.process import process_named_running
 
-# Availible services and prouceses
+# Available services and processes
 # 1 - service
 # 2 - process
 services = {

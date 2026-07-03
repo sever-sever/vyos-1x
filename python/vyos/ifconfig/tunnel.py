@@ -1,4 +1,4 @@
-# Copyright 2019-2021 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -90,9 +90,8 @@ class TunnelIf(Interface):
         # T3357: we do not have the 'encapsulation' in kargs when calling this
         # class from op-mode like "show interfaces tunnel"
         if 'encapsulation' in kargs:
-            self.iftype = kargs['encapsulation']
             # The gretap interface has the possibility to act as L2 bridge
-            if self.iftype in ['gretap', 'ip6gretap']:
+            if kargs['encapsulation'] in ['gretap', 'ip6gretap']:
                 # no multicast, ttl or tos for gretap
                 self.definition = {
                     **TunnelIf.definition,
@@ -110,10 +109,10 @@ class TunnelIf(Interface):
             mapping = { **self.mapping, **self.mapping_ipv4 }
 
         cmd = 'ip tunnel add {ifname} mode {encapsulation}'
-        if self.iftype in ['gretap', 'ip6gretap', 'erspan', 'ip6erspan']:
+        if self.config['encapsulation'] in ['gretap', 'ip6gretap', 'erspan', 'ip6erspan']:
             cmd = 'ip link add name {ifname} type {encapsulation}'
             # ERSPAN requires the serialisation of packets
-            if self.iftype in ['erspan', 'ip6erspan']:
+            if self.config['encapsulation'] in ['erspan', 'ip6erspan']:
                 cmd += ' seq'
 
         for vyos_key, iproute2_key in mapping.items():
@@ -132,7 +131,7 @@ class TunnelIf(Interface):
 
     def _change_options(self):
         # gretap interfaces do not support changing any parameter
-        if self.iftype in ['gretap', 'ip6gretap', 'erspan', 'ip6erspan']:
+        if self.config['encapsulation'] in ['gretap', 'ip6gretap', 'erspan', 'ip6erspan']:
             return
 
         if self.config['encapsulation'] in ['ipip6', 'ip6ip6', 'ip6gre']:
@@ -162,9 +161,9 @@ class TunnelIf(Interface):
         return self.set_interface('multicast', enable)
 
     def update(self, config):
-        """ General helper function which works on a dictionary retrived by
+        """ General helper function which works on a dictionary retrieved by
         get_config_dict(). It's main intention is to consolidate the scattered
-        interface setup code and provide a single point of entry when workin
+        interface setup code and provide a single point of entry when working
         on any interface. """
         # Adjust iproute2 tunnel parameters if necessary
         self._change_options()

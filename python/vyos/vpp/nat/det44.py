@@ -1,0 +1,147 @@
+#
+# Copyright (C) VyOS Inc.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+from vyos.vpp import VPPControl
+from vyos.vpp.nat.nat44 import NAT_IS_NONE, NAT_IS_ADDR_ONLY
+
+
+class Det44:
+    def __init__(self):
+        self.vpp = VPPControl()
+
+    def enable_det44_plugin(self):
+        """Enable DET44 plugin
+        Example:
+            from vyos.vpp.nat import Det44
+            det44 = Det44()
+            det44.enable_det44_plugin()
+        https://github.com/FDio/vpp/blob/stable/2410/src/plugins/nat/det44/det44.api
+        """
+        self.vpp.api.det44_plugin_enable_disable(enable=True)
+
+    def disable_det44_plugin(self):
+        """Disable DET44 plugin"""
+        self.vpp.api.det44_plugin_enable_disable(enable=False)
+
+    def add_det44_interface_outside(self, interface_out):
+        """Add DET44 outside interface"""
+        self.vpp.api.det44_interface_add_del_feature(
+            sw_if_index=self.vpp.get_sw_if_index(interface_out),
+            is_inside=False,
+            is_add=True,
+        )
+
+    def delete_det44_interface_outside(self, interface_out_index):
+        """Delete DET44 outside interface"""
+        self.vpp.api.det44_interface_add_del_feature(
+            sw_if_index=interface_out_index,
+            is_inside=False,
+            is_add=False,
+        )
+
+    def add_det44_interface_inside(self, interface_in):
+        """Add DET44 inside interface"""
+        self.vpp.api.det44_interface_add_del_feature(
+            sw_if_index=self.vpp.get_sw_if_index(interface_in),
+            is_inside=True,
+            is_add=True,
+        )
+
+    def delete_det44_interface_inside(self, interface_in_index):
+        """Delete DET44 inside interface"""
+        self.vpp.api.det44_interface_add_del_feature(
+            sw_if_index=interface_in_index,
+            is_inside=True,
+            is_add=False,
+        )
+
+    def add_det44_mapping(self, in_addr, in_plen, out_addr, out_plen):
+        """Add DET44 mapping"""
+        self.vpp.api.det44_add_del_map(
+            in_addr=in_addr,
+            in_plen=in_plen,
+            out_addr=out_addr,
+            out_plen=out_plen,
+            is_add=True,
+        )
+
+    def delete_det44_mapping(self, in_addr, in_plen, out_addr, out_plen):
+        """Delete DET44 mapping"""
+        self.vpp.api.det44_add_del_map(
+            in_addr=in_addr,
+            in_plen=in_plen,
+            out_addr=out_addr,
+            out_plen=out_plen,
+            is_add=False,
+        )
+
+    def set_det44_timeouts(
+        self, icmp: int, udp: int, tcp_established: int, tcp_transitory: int
+    ):
+        """Set DET44 timeouts
+        Args:
+            tcp_established (int): TCP established timeout
+            tcp_transitory (int): TCP transitory timeout
+            udp (int): UDP timeout
+            icmp (int): ICMP timeout
+        """
+        self.vpp.api.det44_set_timeouts(
+            icmp=icmp,
+            udp=udp,
+            tcp_established=tcp_established,
+            tcp_transitory=tcp_transitory,
+        )
+
+    def get_det44_interfaces_outside(self):
+        ifaces_outside = []
+        for iface in self.vpp.api.det44_interface_dump():
+            if iface.is_outside:
+                ifaces_outside.append(iface.sw_if_index)
+        return ifaces_outside
+
+    def get_det44_interfaces_inside(self):
+        ifaces_inside = []
+        for iface in self.vpp.api.det44_interface_dump():
+            if iface.is_inside:
+                ifaces_inside.append(iface.sw_if_index)
+        return ifaces_inside
+
+    def add_det44_identity_mapping(self, ip_address, protocol, port, tag=''):
+        """Add DET44 identity mapping (exclude rule)"""
+        flags = NAT_IS_ADDR_ONLY if not (protocol or port) else NAT_IS_NONE
+
+        self.vpp.api.det44_add_del_identity_mapping(
+            is_add=True,
+            addr=ip_address,
+            protocol=protocol,
+            port=port,
+            flags=flags,
+            tag=tag if tag else '',
+        )
+
+    def delete_det44_identity_mapping(self, ip_address, protocol, port, tag=''):
+        """Delete DET44 identity mapping (exclude rule)"""
+        flags = NAT_IS_ADDR_ONLY if not (protocol or port) else NAT_IS_NONE
+
+        self.vpp.api.det44_add_del_identity_mapping(
+            is_add=False,
+            addr=ip_address,
+            protocol=protocol,
+            port=port,
+            flags=flags,
+            tag=tag,
+        )

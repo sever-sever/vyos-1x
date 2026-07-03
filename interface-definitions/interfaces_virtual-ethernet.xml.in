@@ -21,6 +21,10 @@
           #include <include/interface/dhcp-options.xml.i>
           #include <include/interface/dhcpv6-options.xml.i>
           #include <include/interface/disable.xml.i>
+          #include <include/interface/mtu-68-16000.xml.i>
+          <leafNode name="mtu">
+            <defaultValue>1500</defaultValue>
+          </leafNode>
           #include <include/interface/netns.xml.i>
           #include <include/interface/vif-s.xml.i>
           #include <include/interface/vif.xml.i>
@@ -38,7 +42,7 @@
               <constraint>
                 <regex>veth[0-9]+</regex>
               </constraint>
-              <constraintErrorMessage>Virutal Ethernet interface must be named vethN</constraintErrorMessage>
+              <constraintErrorMessage>Virtual Ethernet interface must be named vethN</constraintErrorMessage>
             </properties>
           </leafNode>
         </children>

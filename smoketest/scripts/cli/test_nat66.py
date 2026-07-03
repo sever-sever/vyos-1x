@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -36,6 +36,34 @@ class TestNAT66(VyOSUnitTestSHIM.TestCase):
     def tearDown(self):
         self.cli_delete(base_path)
         self.cli_commit()
+        # always forward to base class
+        super().tearDown()
+
+    def test_firewall_group_dependence(self):
+        address_group = 'smoketest_addr_dependence'
+        address_group_member_1 = 'fc00::1'
+        address_group_member_2 = 'fc00::2'
+        translation_prefix = 'fc01::/64'
+
+        # add an address group and set a nat66 rule with it
+        self.cli_set(['firewall', 'group', 'ipv6-address-group', address_group, 'address', address_group_member_1])
+        self.cli_set(dst_path + ['rule', '1', 'destination', 'group', 'address-group', address_group])
+        self.cli_set(src_path + ['rule', '1', 'translation', 'address', translation_prefix])
+        # commit changes to build configuration file
+        self.cli_commit()
+
+        # replace the member of the address group
+        self.cli_delete(['firewall', 'group', 'ipv6-address-group', address_group, 'address', address_group_member_1])
+        self.cli_set(['firewall', 'group', 'ipv6-address-group', address_group, 'address', address_group_member_2])
+        self.cli_commit()
+
+        # verify that the new member is in the address group
+        nftables_search = [
+            [f'set A6_{address_group}'],
+            [f'elements = {{ {address_group_member_2} }}']
+        ]
+
+        self.verify_nftables(nftables_search, 'ip6 vyos_nat')
 
     def test_source_nat66(self):
         source_prefix = 'fc00::/64'
@@ -82,11 +110,13 @@ class TestNAT66(VyOSUnitTestSHIM.TestCase):
         destination_address = 'fc00::1'
         translation_address = 'fc01::1'
         source_address = 'fc02::1'
-        self.cli_set(dst_path + ['rule', '1', 'inbound-interface', 'name', 'eth1'])
+        in_interface = 'eth1'
+
+        self.cli_set(dst_path + ['rule', '1', 'inbound-interface', 'name', in_interface])
         self.cli_set(dst_path + ['rule', '1', 'destination', 'address', destination_address])
         self.cli_set(dst_path + ['rule', '1', 'translation', 'address', translation_address])
 
-        self.cli_set(dst_path + ['rule', '2', 'inbound-interface', 'name', 'eth1'])
+        self.cli_set(dst_path + ['rule', '2', 'inbound-interface', 'name', in_interface])
         self.cli_set(dst_path + ['rule', '2', 'destination', 'address', destination_address])
         self.cli_set(dst_path + ['rule', '2', 'source', 'address', source_address])
         self.cli_set(dst_path + ['rule', '2', 'exclude'])
@@ -95,10 +125,19 @@ class TestNAT66(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
 
         nftables_search = [
-            ['iifname "eth1"', 'ip6 daddr fc00::1', 'dnat to fc01::1'],
-            ['iifname "eth1"', 'ip6 saddr fc02::1', 'ip6 daddr fc00::1', 'return']
+            [f'iifname "{in_interface}"', 'ip6 daddr fc00::1', 'dnat to fc01::1'],
+            [f'iifname "{in_interface}"', 'ip6 saddr fc02::1', 'ip6 daddr fc00::1', 'return']
         ]
+        self.verify_nftables(nftables_search, 'ip6 vyos_nat')
 
+        # T8939 - remove inbound-interface name
+        self.cli_delete(dst_path + ['rule', '2', 'inbound-interface', 'name'])
+        self.cli_commit()
+
+        nftables_search = [
+            [f'iifname "{in_interface}"', 'ip6 daddr fc00::1', 'dnat to fc01::1'],
+            ['ip6 saddr fc02::1', 'ip6 daddr fc00::1', 'return']
+        ]
         self.verify_nftables(nftables_search, 'ip6 vyos_nat')
 
     def test_destination_nat66_protocol(self):
@@ -140,6 +179,43 @@ class TestNAT66(VyOSUnitTestSHIM.TestCase):
         ]
 
         self.verify_nftables(nftables_search, 'ip6 vyos_nat')
+
+    def test_destination_nat66_network_group(self):
+        address_group = 'smoketest_addr'
+        address_group_member = 'fc00::1'
+        network_group = 'smoketest_net'
+        network_group_member = 'fc00::/64'
+        mac_group = 'smoketest_mac'
+        mac_group_member = '00:01:02:03:04:05'
+        translation_prefix = 'fc01::/64'
+
+        self.cli_set(['firewall', 'group', 'ipv6-address-group', address_group, 'address', address_group_member])
+        self.cli_set(['firewall', 'group', 'ipv6-network-group', network_group, 'network', network_group_member])
+        self.cli_set(['firewall', 'group', 'mac-group', mac_group, 'mac-address', mac_group_member])
+
+        self.cli_set(dst_path + ['rule', '1', 'destination', 'group', 'address-group', address_group])
+        self.cli_set(dst_path + ['rule', '1', 'translation', 'address', translation_prefix])
+
+        self.cli_set(dst_path + ['rule', '2', 'destination', 'group', 'network-group', network_group])
+        self.cli_set(dst_path + ['rule', '2', 'translation', 'address', translation_prefix])
+
+        self.cli_set(dst_path + ['rule', '3', 'source', 'group', 'mac-group', mac_group])
+        self.cli_set(dst_path + ['rule', '3', 'translation', 'address', translation_prefix])
+
+        self.cli_commit()
+
+        nftables_search = [
+            [f'set A6_{address_group}'],
+            [f'elements = {{ {address_group_member} }}'],
+            [f'set N6_{network_group}'],
+            [f'elements = {{ {network_group_member} }}'],
+            ['ip6 daddr', f'@A6_{address_group}', 'dnat prefix to fc01::/64'],
+            ['ip6 daddr', f'@N6_{network_group}', 'dnat prefix to fc01::/64'],
+            ['ether saddr', f'@M_{mac_group}', 'dnat prefix to fc01::/64'],
+        ]
+
+        self.verify_nftables(nftables_search, 'ip6 vyos_nat')
+
 
     def test_destination_nat66_without_translation_address(self):
         self.cli_set(dst_path + ['rule', '1', 'inbound-interface', 'name', 'eth1'])
@@ -197,6 +273,42 @@ class TestNAT66(VyOSUnitTestSHIM.TestCase):
 
         self.verify_nftables(nftables_search, 'ip6 vyos_nat')
 
+    def test_source_nat66_network_group(self):
+        address_group = 'smoketest_addr'
+        address_group_member = 'fc00::1'
+        network_group = 'smoketest_net'
+        network_group_member = 'fc00::/64'
+        mac_group = 'smoketest_mac'
+        mac_group_member = '00:01:02:03:04:05'
+        translation_prefix = 'fc01::/64'
+
+        self.cli_set(['firewall', 'group', 'ipv6-address-group', address_group, 'address', address_group_member])
+        self.cli_set(['firewall', 'group', 'ipv6-network-group', network_group, 'network', network_group_member])
+        self.cli_set(['firewall', 'group', 'mac-group', mac_group, 'mac-address', mac_group_member])
+
+        self.cli_set(src_path + ['rule', '1', 'destination', 'group', 'address-group', address_group])
+        self.cli_set(src_path + ['rule', '1', 'translation', 'address', translation_prefix])
+
+        self.cli_set(src_path + ['rule', '2', 'destination', 'group', 'network-group', network_group])
+        self.cli_set(src_path + ['rule', '2', 'translation', 'address', translation_prefix])
+
+        self.cli_set(src_path + ['rule', '3', 'source', 'group', 'mac-group', mac_group])
+        self.cli_set(src_path + ['rule', '3', 'translation', 'address', translation_prefix])
+
+        self.cli_commit()
+
+        nftables_search = [
+            [f'set A6_{address_group}'],
+            [f'elements = {{ {address_group_member} }}'],
+            [f'set N6_{network_group}'],
+            [f'elements = {{ {network_group_member} }}'],
+            ['ip6 daddr', f'@A6_{address_group}', 'snat prefix to fc01::/64'],
+            ['ip6 daddr', f'@N6_{network_group}', 'snat prefix to fc01::/64'],
+            ['ether saddr', f'@M_{mac_group}', 'snat prefix to fc01::/64'],
+        ]
+
+        self.verify_nftables(nftables_search, 'ip6 vyos_nat')
+
     def test_nat66_no_rules(self):
         # T3206: deleting all rules but keep the direction 'destination' or
         # 'source' resulteds in KeyError: 'rule'.
@@ -208,4 +320,4 @@ class TestNAT66(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

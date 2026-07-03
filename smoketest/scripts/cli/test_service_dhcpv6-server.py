@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -26,7 +26,7 @@ from vyos.utils.process import process_named_running
 from vyos.utils.file import read_file
 
 PROCESS_NAME = 'kea-dhcp6'
-KEA6_CONF = '/run/kea/kea-dhcp6.conf'
+KEA6_CONF = '/var/run/kea/kea-dhcp6.conf'
 base_path = ['service', 'dhcpv6-server']
 
 subnet = '2001:db8:f00::/64'
@@ -37,18 +37,22 @@ nis_servers = ['2001:db8:ffff::1', '2001:db8:ffff::2']
 interface = 'eth0'
 interface_addr = inc_ip(subnet, 1) + '/64'
 
+
 class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
     @classmethod
     def setUpClass(cls):
         super(TestServiceDHCPv6Server, cls).setUpClass()
         # Clear out current configuration to allow running this test on a live system
         cls.cli_delete(cls, base_path)
-
-        cls.cli_set(cls, ['interfaces', 'ethernet', interface, 'address', interface_addr])
+        cls.cli_set(
+            cls, ['interfaces', 'ethernet', interface, 'address', interface_addr]
+        )
 
     @classmethod
     def tearDownClass(cls):
-        cls.cli_delete(cls, ['interfaces', 'ethernet', interface, 'address', interface_addr])
+        cls.cli_delete(
+            cls, ['interfaces', 'ethernet', interface, 'address', interface_addr]
+        )
         cls.cli_commit(cls)
 
         super(TestServiceDHCPv6Server, cls).tearDownClass()
@@ -56,6 +60,8 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
     def tearDown(self):
         self.cli_delete(base_path)
         self.cli_commit()
+        # always forward to base class
+        super().tearDown()
 
     def walk_path(self, obj, path):
         current = obj
@@ -68,7 +74,7 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
                 self.assertTrue(isinstance(current, list), msg=f'Failed path: {path}')
                 self.assertTrue(0 <= key < len(current), msg=f'Failed path: {path}')
             else:
-                assert False, "Invalid type"
+                assert False, 'Invalid type'
 
             current = current[key]
 
@@ -89,7 +95,7 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
 
     def test_single_pool(self):
         shared_net_name = 'SMOKE-1'
-        search_domains  = ['foo.vyos.net', 'bar.vyos.net']
+        search_domains = ['foo.vyos.net', 'bar.vyos.net']
         lease_time = '1200'
         max_lease_time = '72000'
         min_lease_time = '600'
@@ -97,9 +103,11 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
         sip_server = 'sip.vyos.net'
         sntp_server = inc_ip(subnet, 100)
         range_start = inc_ip(subnet, 256)  # ::100
-        range_stop = inc_ip(subnet, 65535) # ::ffff
+        range_stop = inc_ip(subnet, 65535)  # ::ffff
 
         pool = base_path + ['shared-network-name', shared_net_name, 'subnet', subnet]
+        mapping = pool + ['static-mapping']
+        conf_path = ['Dhcp6', 'shared-networks']
 
         self.cli_set(base_path + ['preference', preference])
         self.cli_set(pool + ['interface', interface])
@@ -108,6 +116,7 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
         self.cli_set(pool + ['lease-time', 'default', lease_time])
         self.cli_set(pool + ['lease-time', 'maximum', max_lease_time])
         self.cli_set(pool + ['lease-time', 'minimum', min_lease_time])
+        self.cli_set(pool + ['option', 'capwap-controller', dns_1])
         self.cli_set(pool + ['option', 'name-server', dns_1])
         self.cli_set(pool + ['option', 'name-server', dns_2])
         self.cli_set(pool + ['option', 'name-server', dns_2])
@@ -118,6 +127,8 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
         self.cli_set(pool + ['range', '1', 'start', range_start])
         self.cli_set(pool + ['range', '1', 'stop', range_stop])
 
+        self.cli_set(pool + ['option', 'time-zone', 'Europe/London'])
+
         for server in nis_servers:
             self.cli_set(pool + ['option', 'nis-server', server])
             self.cli_set(pool + ['option', 'nisplus-server', server])
@@ -125,19 +136,24 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
         for search in search_domains:
             self.cli_set(pool + ['option', 'domain-search', search])
 
-        client_base = 1
-        for client in ['client1', 'client2', 'client3']:
-            duid = f'00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:{client_base:02}'
-            self.cli_set(pool + ['static-mapping', client, 'duid', duid])
-            self.cli_set(pool + ['static-mapping', client, 'ipv6-address', inc_ip(subnet, client_base)])
-            self.cli_set(pool + ['static-mapping', client, 'ipv6-prefix', inc_ip(subnet, client_base << 64) + '/64'])
-            client_base += 1
+        for client_suffix in range(1, 4):
+            duid = f'00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:{client_suffix:02}'
+            ip1 = inc_ip(subnet, client_suffix * 2 - 1)
+            ip2 = inc_ip(subnet, client_suffix * 2)
+            prefix1 = inc_ip(subnet, (client_suffix * 2 - 1) << 64) + '/64'
+            prefix2 = inc_ip(subnet, (client_suffix * 2) << 64) + '/64'
+
+            self.cli_set(mapping + [f'client{client_suffix}', 'duid', duid])
+            self.cli_set(mapping + [f'client{client_suffix}', 'ipv6-address', ip1])
+            self.cli_set(mapping + [f'client{client_suffix}', 'ipv6-address', ip2])
+            self.cli_set(mapping + [f'client{client_suffix}', 'ipv6-prefix', prefix1])
+            self.cli_set(mapping + [f'client{client_suffix}', 'ipv6-prefix', prefix2])
 
         # cannot have both mac-address and duid set
         with self.assertRaises(ConfigSessionError):
-            self.cli_set(pool + ['static-mapping', 'client1', 'mac', '00:50:00:00:00:11'])
+            self.cli_set(mapping + ['client1', 'mac', '00:50:00:00:00:11'])
             self.cli_commit()
-        self.cli_delete(pool + ['static-mapping', 'client1', 'mac'])
+        self.cli_delete(mapping + ['client1', 'mac'])
 
         # commit changes
         self.cli_commit()
@@ -145,114 +161,172 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
         config = read_file(KEA6_CONF)
         obj = loads(config)
 
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks'], 'name', shared_net_name)
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'subnet', subnet)
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'interface', interface)
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'id', 1)
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'valid-lifetime', int(lease_time))
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'min-valid-lifetime', int(min_lease_time))
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'max-valid-lifetime', int(max_lease_time))
+        self.verify_config_value(obj, conf_path, 'name', shared_net_name)
+        self.verify_config_value(obj, conf_path + [0, 'subnet6'], 'subnet', subnet)
+        self.verify_config_value(
+            obj, conf_path + [0, 'subnet6'], 'interface', interface
+        )
+        self.verify_config_value(obj, conf_path + [0, 'subnet6'], 'id', 1)
+        self.verify_config_value(
+            obj,
+            conf_path + [0, 'subnet6'],
+            'valid-lifetime',
+            int(lease_time),
+        )
+        self.verify_config_value(
+            obj,
+            conf_path + [0, 'subnet6'],
+            'min-valid-lifetime',
+            int(min_lease_time),
+        )
+        self.verify_config_value(
+            obj,
+            conf_path + [0, 'subnet6'],
+            'max-valid-lifetime',
+            int(max_lease_time),
+        )
 
         # Verify options
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'option-data'],
-                {'name': 'dns-servers', 'data': f'{dns_1}, {dns_2}'})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'capwap-ac-v6', 'data': dns_1},
+        )
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'option-data'],
-                {'name': 'domain-search', 'data': ", ".join(search_domains)})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'dns-servers', 'data': f'{dns_1}, {dns_2}'},
+        )
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'option-data'],
-                {'name': 'nis-domain-name', 'data': domain})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'domain-search', 'data': ', '.join(search_domains)},
+        )
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'option-data'],
-                {'name': 'nis-servers', 'data': ", ".join(nis_servers)})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'nis-domain-name', 'data': domain},
+        )
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'option-data'],
-                {'name': 'nisp-domain-name', 'data': domain})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'nis-servers', 'data': ', '.join(nis_servers)},
+        )
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'option-data'],
-                {'name': 'nisp-servers', 'data': ", ".join(nis_servers)})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'nisp-domain-name', 'data': domain},
+        )
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'option-data'],
-                {'name': 'sntp-servers', 'data': sntp_server})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'nisp-servers', 'data': ', '.join(nis_servers)},
+        )
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'option-data'],
-                {'name': 'sip-server-dns', 'data': sip_server})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'sntp-servers', 'data': sntp_server},
+        )
+        self.verify_config_object(
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'sip-server-dns', 'data': sip_server},
+        )
+
+        # Time zone
+        self.verify_config_object(
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'new-posix-timezone', 'data': 'GMT0BST\\,M3.5.0/1\\,M10.5.0'},
+        )
+        self.verify_config_object(
+            obj,
+            conf_path + [0, 'subnet6', 0, 'option-data'],
+            {'name': 'new-tzdb-timezone', 'data': 'Europe/London'},
+        )
 
         # Verify pools
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'pools'],
-                {'pool': f'{range_start} - {range_stop}'})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'pools'],
+            {'pool': f'{range_start} - {range_stop}'},
+        )
 
-        client_base = 1
-        for client in ['client1', 'client2', 'client3']:
-            duid = f'00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:{client_base:02}'
-            ip = inc_ip(subnet, client_base)
-            prefix = inc_ip(subnet, client_base << 64) + '/64'
+        for client_suffix in range(1, 4):
+            duid = f'00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:{client_suffix:02}'
+            ip1 = inc_ip(subnet, client_suffix * 2 - 1)
+            ip2 = inc_ip(subnet, client_suffix * 2)
+            prefix1 = inc_ip(subnet, (client_suffix * 2 - 1) << 64) + '/64'
+            prefix2 = inc_ip(subnet, (client_suffix * 2) << 64) + '/64'
 
             self.verify_config_object(
-                    obj,
-                    ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'reservations'],
-                    {'hostname': client, 'duid': duid, 'ip-addresses': [ip], 'prefixes': [prefix]})
-
-            client_base += 1
+                obj,
+                conf_path + [0, 'subnet6', 0, 'reservations'],
+                {
+                    'hostname': f'client{client_suffix}',
+                    'duid': duid,
+                    'ip-addresses': [ip1, ip2],
+                    'prefixes': [prefix1, prefix2],
+                },
+            )
 
         # Check for running process
         self.assertTrue(process_named_running(PROCESS_NAME))
 
-
     def test_prefix_delegation(self):
         shared_net_name = 'SMOKE-2'
         range_start = inc_ip(subnet, 256)  # ::100
-        range_stop = inc_ip(subnet, 65535) # ::ffff
+        range_stop = inc_ip(subnet, 65535)  # ::ffff
         delegate_start = '2001:db8:ee::'
         delegate_len = '64'
+        bad_prefix_len = '32'
         prefix_len = '56'
         exclude_len = '66'
 
         pool = base_path + ['shared-network-name', shared_net_name, 'subnet', subnet]
+        pd_mapping = pool + ['prefix-delegation']
+        pd_mapping_prefix = pd_mapping + ['prefix', delegate_start]
+        conf_path = ['Dhcp6', 'shared-networks']
+
         self.cli_set(pool + ['subnet-id', '1'])
         self.cli_set(pool + ['range', '1', 'start', range_start])
         self.cli_set(pool + ['range', '1', 'stop', range_stop])
-        self.cli_set(pool + ['prefix-delegation', 'prefix', delegate_start, 'delegated-length', delegate_len])
-        self.cli_set(pool + ['prefix-delegation', 'prefix', delegate_start, 'prefix-length', prefix_len])
-        self.cli_set(pool + ['prefix-delegation', 'prefix', delegate_start, 'excluded-prefix', delegate_start])
-        self.cli_set(pool + ['prefix-delegation', 'prefix', delegate_start, 'excluded-prefix-length', exclude_len])
+        self.cli_set(pd_mapping_prefix + ['delegated-length', delegate_len])
+        self.cli_set(pd_mapping_prefix + ['prefix-length', bad_prefix_len])
+        self.cli_set(pd_mapping_prefix + ['excluded-prefix', delegate_start])
+        self.cli_set(pd_mapping_prefix + ['excluded-prefix-length', exclude_len])
 
         # commit changes
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_set(pd_mapping_prefix + ['prefix-length', prefix_len])
         self.cli_commit()
 
         config = read_file(KEA6_CONF)
         obj = loads(config)
 
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks'], 'name', shared_net_name)
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'subnet', subnet)
+        self.verify_config_value(obj, conf_path, 'name', shared_net_name)
+        self.verify_config_value(obj, conf_path + [0, 'subnet6'], 'subnet', subnet)
 
         # Verify pools
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'pools'],
-                {'pool': f'{range_start} - {range_stop}'})
+            obj,
+            conf_path + [0, 'subnet6', 0, 'pools'],
+            {'pool': f'{range_start} - {range_stop}'},
+        )
 
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'shared-networks', 0, 'subnet6', 0, 'pd-pools'],
-                {
-                    'prefix': delegate_start,
-                    'prefix-len': int(prefix_len),
-                    'delegated-len': int(delegate_len),
-                    'excluded-prefix': delegate_start,
-                    'excluded-prefix-len': int(exclude_len)
-                })
+            obj,
+            conf_path + [0, 'subnet6', 0, 'pd-pools'],
+            {
+                'prefix': delegate_start,
+                'prefix-len': int(prefix_len),
+                'delegated-len': int(delegate_len),
+                'excluded-prefix': delegate_start,
+                'excluded-prefix-len': int(exclude_len),
+            },
+        )
 
         # Check for running process
         self.assertTrue(process_named_running(PROCESS_NAME))
@@ -262,9 +336,12 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
         ns_global_1 = '2001:db8::1111'
         ns_global_2 = '2001:db8::2222'
 
+        pool = base_path + ['shared-network-name', shared_net_name, 'subnet', subnet]
+        conf_path = ['Dhcp6', 'shared-networks']
+
         self.cli_set(base_path + ['global-parameters', 'name-server', ns_global_1])
         self.cli_set(base_path + ['global-parameters', 'name-server', ns_global_2])
-        self.cli_set(base_path + ['shared-network-name', shared_net_name, 'subnet', subnet, 'subnet-id', '1'])
+        self.cli_set(pool + ['subnet-id', '1'])
 
         # commit changes
         self.cli_commit()
@@ -272,17 +349,63 @@ class TestServiceDHCPv6Server(VyOSUnitTestSHIM.TestCase):
         config = read_file(KEA6_CONF)
         obj = loads(config)
 
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks'], 'name', shared_net_name)
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'subnet', subnet)
-        self.verify_config_value(obj, ['Dhcp6', 'shared-networks', 0, 'subnet6'], 'id', 1)
+        self.verify_config_value(obj, conf_path, 'name', shared_net_name)
+        self.verify_config_value(obj, conf_path + [0, 'subnet6'], 'subnet', subnet)
+        self.verify_config_value(obj, conf_path + [0, 'subnet6'], 'id', 1)
 
         self.verify_config_object(
-                obj,
-                ['Dhcp6', 'option-data'],
-                {'name': 'dns-servers', "code": 23, "space": "dhcp6", "csv-format": True, 'data': f'{ns_global_1}, {ns_global_2}'})
+            obj,
+            ['Dhcp6', 'option-data'],
+            {
+                'name': 'dns-servers',
+                'code': 23,
+                'space': 'dhcp6',
+                'csv-format': True,
+                'data': f'{ns_global_1}, {ns_global_2}',
+            },
+        )
 
         # Check for running process
         self.assertTrue(process_named_running(PROCESS_NAME))
 
+    def test_static_mapping_duplicate_address_prefix(self):
+        shared_net_name = 'SMOKE-DUP'
+        pool = base_path + ['shared-network-name', shared_net_name, 'subnet', subnet]
+        mapping = pool + ['static-mapping']
+
+        self.cli_set(pool + ['subnet-id', '1'])
+        duid1 = '00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:01'
+        duid2 = '00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:02'
+        dup_addr = inc_ip(subnet, 10)
+        dup_prefix = inc_ip(subnet, 1 << 64) + '/64'
+
+        # commit valid config with a single address mapping
+        self.cli_set(mapping + ['client1', 'duid', duid1])
+        self.cli_set(mapping + ['client1', 'ipv6-address', dup_addr])
+        self.cli_commit()
+
+        # adding a second mapping with the same address must fail
+        self.cli_set(mapping + ['client2', 'duid', duid2])
+        self.cli_set(mapping + ['client2', 'ipv6-address', dup_addr])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_delete(mapping + ['client1'])
+        self.cli_commit()
+
+        # commit valid config with a single prefix mapping
+        self.cli_set(mapping + ['client1', 'duid', duid1])
+        self.cli_set(mapping + ['client1', 'ipv6-prefix', dup_prefix])
+        self.cli_commit()
+
+        # adding a second mapping with the same prefix must fail
+        self.cli_set(mapping + ['client2', 'ipv6-prefix', dup_prefix])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_delete(mapping + ['client1'])
+        self.cli_commit()
+
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

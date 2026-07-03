@@ -1,4 +1,4 @@
-# Copyright 2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -13,9 +13,14 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library.  If not, see <http://www.gnu.org/licenses/>.
 
+import hashlib
+
+from json import loads
+from socket import AF_INET
+from socket import AF_INET6
+from vyos.utils.process import cmd
+
 def _are_same_ip(one, two):
-    from socket import AF_INET
-    from socket import AF_INET6
     from socket import inet_pton
     from vyos.template import is_ipv4
     # compare the binary representation of the IP
@@ -47,9 +52,63 @@ def is_netns_interface(interface, netns):
         return True
     return False
 
+def get_host_identity() -> str:
+    """
+    Build a stable host identity string for deterministic MAC generation.
+
+    Combines:
+      • The system's hardware UUID (from /sys/class/dmi/id/product_uuid),
+        if available
+      • The system hostname
+
+    Both are normalized (lowercase, dashes removed in UUID) and joined with a colon.
+
+    Returns:
+        str: A string "<uuid>:<hostname>", used as part of the host-specific seed when
+             generating deterministic MAC addresses.
+    """
+    import os.path
+
+    uuid_file = '/sys/class/dmi/id/product_uuid'
+
+    if os.path.exists(uuid_file):
+        uuid = cmd(f"sudo cat {uuid_file}").strip().replace("-", "").lower()
+    else:
+        uuid = None
+
+    host = cmd("hostname").strip().lower()
+
+    if uuid is not None:
+        return f"{uuid}:{host}"
+    else:
+        return host
+
+def gen_mac(name: str, addr: str, ident: str) -> str:
+    """
+    Generate a deterministic locally-administered MAC address.
+
+    The MAC is derived from:
+      • Host identity (UUID + hostname)
+      • Container name
+      • Concatenated address string (IPv4 and/or IPv6 addresses)
+
+    A SHA-256 digest is computed from the combined string. The first 5 bytes
+    of the digest are used, prefixed with 0x02 to mark the address as
+    locally-administered and unicast.
+
+    Args:
+        name (str): Container name to differentiate MACs.
+        addr (str): Concatenated list of container addresses (IPv4/IPv6).
+
+    Returns:
+        str: Deterministic MAC address in standard "xx:xx:xx:xx:xx:xx" format.
+    """
+    h = hashlib.sha256(f"{ident}:{name}:{addr}".encode()).hexdigest()
+    # 0x02 = locally-administered, unicast
+    b = [0x02] + [int(h[i:i+2], 16) for i in range(0, 10, 2)]  # 5 bytes = 40 bits
+    return ":".join(f"{x:02x}" for x in b)
+
 def get_netns_all() -> list:
-    from json import loads
-    from vyos.utils.process import cmd
     tmp = loads(cmd('ip --json netns ls'))
     return [ netns['name'] for netns in tmp ]
 
@@ -59,17 +118,17 @@ def get_vrf_members(vrf: str) -> list:
     :param vrf: str
     :return: list
     """
-    import json
-    from vyos.utils.process import cmd
     interfaces = []
     try:
         if not interface_exists(vrf):
             raise ValueError(f'VRF "{vrf}" does not exist!')
         output = cmd(f'ip --json --brief link show vrf {vrf}')
-        answer = json.loads(output)
+        answer = loads(output)
         for data in answer:
             if 'ifname' in data:
-                interfaces.append(data.get('ifname'))
+                # Skip PIM interfaces which appears in VRF
+                if 'pim' not in data.get('ifname'):
+                    interfaces.append(data.get('ifname'))
     except:
         pass
     return interfaces
@@ -78,7 +137,10 @@ def get_interface_vrf(interface):
     """ Returns VRF of given interface """
     from vyos.utils.dict import dict_search
     from vyos.utils.network import get_interface_config
-    tmp = get_interface_config(interface)
+    if isinstance(interface, str):
+        tmp = get_interface_config(interface)
+    elif isinstance(interface, dict):
+        tmp = interface
     if dict_search('linkinfo.info_slave_kind', tmp) == 'vrf':
         return tmp['master']
     return 'default'
@@ -96,14 +158,47 @@ def get_vrf_tableid(interface: str):
         table = tmp['linkinfo']['info_slave_data']['table']
     return table
 
+
+def split_interface_vlans(interface: str) -> tuple:
+    """
+    Parse a interface name (with optional VLAN suffixes) into its
+    component parts.
+
+    Handles three input forms:
+      - 'br0'         -> root bridge interface only
+      - 'br0.100'     -> root bridge interface + one VLAN sub-interface level
+      - 'br0.100.200' -> root bridge interface + two VLAN sub-interface levels (QinQ)
+
+    Returns a tuple with the following parts on success:
+      (
+        'br0',  # root interface (always present)
+        '100',  # first VLAN suffix  (None if not present)
+        '200',  # second VLAN suffix (None if not present)
+      )
+    """
+
+    parts = interface.split('.')
+
+    # Guard: we support at most bridge + 2 VLAN levels (e.g. br0.100.200)
+    if len(parts) > 3:
+        raise ValueError(
+            f'Interface "{interface}" has too many VLAN suffixes. '
+            'Only up to two levels are supported (e.g. br0.100.200).'
+        )
+
+    iface = parts[0]
+    vlan_id = parts[1] if len(parts) >= 2 else None
+    inner_vlan_id = parts[2] if len(parts) == 3 else None
+
+    return iface, vlan_id, inner_vlan_id
+
+
 def get_interface_config(interface):
     """ Returns the used encapsulation protocol for given interface.
         If interface does not exist, None is returned.
     """
     if not interface_exists(interface):
         return None
-    from json import loads
-    from vyos.utils.process import cmd
     tmp = loads(cmd(f'ip --detail --json link show dev {interface}'))[0]
     return tmp
 
@@ -113,18 +208,13 @@ def get_interface_address(interface):
     """
     if not interface_exists(interface):
         return None
-    from json import loads
-    from vyos.utils.process import cmd
     tmp = loads(cmd(f'ip --detail --json addr show dev {interface}'))[0]
     return tmp
 
 def get_interface_namespace(interface: str):
     """
-       Returns wich netns the interface belongs to
+       Returns which netns the interface belongs to
     """
-    from json import loads
-    from vyos.utils.process import cmd
-
     # Bail out early if netns does not exist
     tmp = cmd(f'ip --json netns ls')
     if not tmp: return None
@@ -152,14 +242,13 @@ def is_ipv6_tentative(iface: str, ipv6_address: str) -> bool:
     Returns:
         bool: True if the IPv6 address is tentative, False otherwise.
     """
-    import json
     from vyos.utils.process import rc_cmd
 
     rc, out = rc_cmd(f'ip -6 --json address show dev {iface}')
     if rc:
         return False
 
-    data = json.loads(out)
+    data = loads(out)
     for addr_info in data[0]['addr_info']:
         if (
             addr_info.get('local') == ipv6_address and
@@ -171,9 +260,7 @@ def is_ipv6_tentative(iface: str, ipv6_address: str) -> bool:
 def is_wwan_connected(interface):
     """ Determine if a given WWAN interface, e.g. wwan0 is connected to the
     carrier network or not """
-    import json
     from vyos.utils.dict import dict_search
-    from vyos.utils.process import cmd
     from vyos.utils.process import is_systemd_service_active
 
     if not interface.startswith('wwan'):
@@ -186,8 +273,12 @@ def is_wwan_connected(interface):
 
     modem = interface.lstrip('wwan')
 
-    tmp = cmd(f'mmcli --modem {modem} --output-json')
-    tmp = json.loads(tmp)
+    try:
+        tmp = cmd(f'mmcli --modem {modem} --output-json')
+    except OSError:
+        return False
+
+    tmp = loads(tmp)
 
     # return True/False if interface is in connected state
     return dict_search('modem.generic.state', tmp) == 'connected'
@@ -196,15 +287,11 @@ def get_bridge_fdb(interface):
     """ Returns the forwarding database entries for a given interface """
     if not interface_exists(interface):
         return None
-    from json import loads
-    from vyos.utils.process import cmd
     tmp = loads(cmd(f'bridge -j fdb show dev {interface}'))
     return tmp
 
 def get_all_vrfs():
     """ Return a dictionary of all system wide known VRF instances """
-    from json import loads
-    from vyos.utils.process import cmd
     tmp = loads(cmd('ip --json vrf list'))
     # Result is of type [{"name":"red","table":1000},{"name":"blue","table":2000}]
     # so we will re-arrange it to a more nicer representation:
@@ -222,7 +309,6 @@ def interface_list() -> list:
     :rtype: list
     """
     return Section.interfaces()
-
 
 def vrf_list() -> list:
     """
@@ -254,62 +340,115 @@ def mac2eui64(mac, prefix=None):
         except:  # pylint: disable=bare-except
             return
 
-def check_port_availability(ipaddress, port, protocol):
+
+def check_port_availability(address: str = None, port: int = 0,
+                            protocol: str = 'tcp', vrf: str = None) -> bool:
     """
-    Check if port is available and not used by any service
-    Return False if a port is busy or IP address does not exists
+    Check if given port is available and not used by any service.
+
     Should be used carefully for services that can start listening
     dynamically, because IP address may be dynamic too
+
+    Args:
+      address: IPv4 or IPv6 address - if None, checks on all interfaces
+      port:  TCP/UDP port number.
+      vrf:   VRF name to test the bind in - when set, the socket is bound
+             to the VRF master device via SO_BINDTODEVICE so that the
+             port check runs in the correct L3 domain.
+
+    Returns:
+      False if a port is busy or IP address does not exists
+      True if a port is free and IP address exists
     """
-    from socketserver import TCPServer, UDPServer
+    import socket
     from ipaddress import ip_address
+
+    # treat None as "any address"
+    address = address or '::'
 
     # verify arguments
     try:
-        ipaddress = ip_address(ipaddress).compressed
-    except:
-        raise ValueError(f'The {ipaddress} is not a valid IPv4 or IPv6 address')
+        address = ip_address(address).compressed
+    except ValueError:
+        raise ValueError(f'{address} is not a valid IPv4 or IPv6 address')
     if port not in range(1, 65536):
-        raise ValueError(f'The port number {port} is not in the 1-65535 range')
+        raise ValueError(f'Port {port} is not in range 1-65535')
     if protocol not in ['tcp', 'udp']:
-        raise ValueError(f'The protocol {protocol} is not supported. Only tcp and udp are allowed')
+        raise ValueError(f'{protocol} is not supported - only tcp and udp are allowed')
 
-    # check port availability
+    protocol = socket.SOCK_STREAM if protocol == 'tcp' else socket.SOCK_DGRAM
     try:
-        if protocol == 'tcp':
-            server = TCPServer((ipaddress, port), None, bind_and_activate=True)
-        if protocol == 'udp':
-            server = UDPServer((ipaddress, port), None, bind_and_activate=True)
-        server.server_close()
-    except Exception as e:
-        # errno.h:
-        #define EADDRINUSE  98  /* Address already in use */
-        if e.errno == 98:
-            return False
+        addr_info = socket.getaddrinfo(address, port, socket.AF_UNSPEC, protocol)
+    except socket.gaierror as e:
+        print(f'Invalid address: {address}')
+        return False
 
-    return True
+    for family, socktype, proto, canonname, sockaddr in addr_info:
+        try:
+            with socket.socket(family, socktype, proto) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                # When a VRF is specified, bind the socket to the VRF master
+                # device so the address is resolved in that VRF's L3 domain.
+                if vrf:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE,
+                                 (vrf + '\0').encode())
+                s.bind(sockaddr)
+                return True # port is free to use
+        except OSError:
+            return False # port is already in use
 
-def is_listen_port_bind_service(port: int, service: str) -> bool:
+    # if we reach this point, no socket was tested and we assume the port is
+    # already in use - better safe then sorry
+    return False
+
+
+def is_listen_port_bind_service(port: int, service: str, address: str = None) -> bool:
     """Check if listen port bound to expected program name
     :param port: Bind port
     :param service: Program name
+    :param address: IP address - if None, not consider this IP for filtering
     :return: bool
 
     Example:
         % is_listen_port_bind_service(443, 'nginx')
         True
+        % is_listen_port_bind_service(443, 'nginx', address='10.10.0.1')
+        False
         % is_listen_port_bind_service(443, 'ocserv-main')
         False
     """
     from psutil import net_connections as connections
     from psutil import Process as process
+    from ipaddress import ip_address
+
+    has_address = bool(address)
+
+    if has_address:
+        try:
+            # Normalize address before comparison to handle IPv6 format variations:
+            #   0:0:0:0:0:0:0:1 vs ::1
+            address = ip_address(address).compressed
+        except ValueError:
+            raise ValueError(f'{address} is not a valid IPv4 or IPv6 address')
+
     for connection in connections():
         addr = connection.laddr
         pid = connection.pid
+
+        # The PID of the process that opened the socket may not be retrievable
+        if pid is None:
+            continue
+
         pid_name = process(pid).name()
         pid_port = addr.port
-        if service == pid_name and port == pid_port:
-            return True
+
+        if has_address:
+            if address == addr.ip and port == pid_port and service == pid_name:
+                return True
+        else:
+            if service == pid_name and port == pid_port:
+                return True
+
     return False
 
 def is_ipv6_link_local(addr):
@@ -325,7 +464,7 @@ def is_ipv6_link_local(addr):
 
 def is_addr_assigned(ip_address, vrf=None, return_ifname=False, include_vrf=False) -> bool | str:
     """ Verify if the given IPv4/IPv6 address is assigned to any interface """
-    from netifaces import interfaces
+    from netifaces import interfaces # pylint: disable = no-name-in-module
     from vyos.utils.network import get_interface_config
     from vyos.utils.dict import dict_search
 
@@ -348,7 +487,6 @@ def is_intf_addr_assigned(ifname: str, addr: str, netns: str=None) -> bool:
     It can check both a single IP address (e.g. 192.0.2.1 or a assigned CIDR
     address 192.0.2.1/24.
     """
-    import json
     import jmespath
 
     from vyos.utils.process import rc_cmd
@@ -357,7 +495,7 @@ def is_intf_addr_assigned(ifname: str, addr: str, netns: str=None) -> bool:
     netns_cmd = f'ip netns exec {netns}' if netns else ''
     rc, out = rc_cmd(f'{netns_cmd} ip --json address show dev {ifname}')
     if rc == 0:
-        json_out = json.loads(out)
+        json_out = loads(out)
         addresses = jmespath.search("[].addr_info[].{family: family, address: local, prefixlen: prefixlen}", json_out)
         for address_info in addresses:
             family = address_info['family']
@@ -387,12 +525,24 @@ def is_wireguard_key_pair(private_key: str, public_key:str) -> bool:
     :return: If public/private keys are keypair returns True else False
     :rtype: bool
     """
-    from vyos.utils.process import cmd
     gen_public_key = cmd('wg pubkey', input=private_key)
     if gen_public_key == public_key:
         return True
     else:
         return False
+
+def get_wireguard_peers(ifname: str) -> list:
+    """
+    Return list of configured Wireguard peers for interface
+    :param ifname: Interface name
+    :type ifname: str
+    :return: list of public keys
+    :rtype: list
+    """
+    if not interface_exists(ifname):
+        return []
+    peers = cmd(f'wg show {ifname} peers')
+    return peers.splitlines()
 
 def is_subnet_connected(subnet, primary=False):
     """
@@ -408,10 +558,8 @@ def is_subnet_connected(subnet, primary=False):
     from ipaddress import ip_address
     from ipaddress import ip_network
 
-    from netifaces import ifaddresses
-    from netifaces import interfaces
-    from netifaces import AF_INET
-    from netifaces import AF_INET6
+    from netifaces import ifaddresses # pylint: disable = no-name-in-module
+    from netifaces import interfaces # pylint: disable = no-name-in-module
 
     from vyos.template import is_ipv6
 
@@ -445,9 +593,7 @@ def is_subnet_connected(subnet, primary=False):
 def is_afi_configured(interface: str, afi):
     """ Check if given address family is configured, or in other words - an IP
     address is assigned to the interface. """
-    from netifaces import ifaddresses
-    from netifaces import AF_INET
-    from netifaces import AF_INET6
+    from netifaces import ifaddresses # pylint: disable = no-name-in-module
 
     if afi not in [AF_INET, AF_INET6]:
         raise ValueError('Address family must be in [AF_INET, AF_INET6]')
@@ -462,9 +608,6 @@ def is_afi_configured(interface: str, afi):
 
 def get_vxlan_vlan_tunnels(interface: str) -> list:
     """ Return a list of strings with VLAN IDs configured in the Kernel """
-    from json import loads
-    from vyos.utils.process import cmd
-
     if not interface.startswith('vxlan'):
         raise ValueError('Only applicable for VXLAN interfaces!')
 
@@ -505,9 +648,6 @@ def get_vxlan_vlan_tunnels(interface: str) -> list:
 
 def get_vxlan_vni_filter(interface: str) -> list:
     """ Return a list of strings with VNIs configured in the Kernel"""
-    from json import loads
-    from vyos.utils.process import cmd
-
     if not interface.startswith('vxlan'):
         raise ValueError('Only applicable for VXLAN interfaces!')
 
@@ -578,9 +718,8 @@ def get_nft_vrf_zone_mapping() -> dict:
               {'interface': 'eth2', 'vrf_tableid': 1000},
               {'interface': 'blue', 'vrf_tableid': 2000}]
     """
-    from json import loads
     from jmespath import search
-    from vyos.utils.process import cmd
+
     output = []
     tmp = loads(cmd('sudo nft -j list table inet vrf_zones'))
     # {'nftables': [{'metainfo': {'json_schema_version': 1,
@@ -597,3 +736,60 @@ def get_nft_vrf_zone_mapping() -> dict:
     for (vrf_name, vrf_id) in vrf_list:
         output.append({'interface' : vrf_name, 'vrf_tableid' : vrf_id})
     return output
+
+def is_valid_ipv4_address_or_range(addr: str) -> bool:
+    """
+    Validates if the provided address is a valid IPv4, CIDR or IPv4 range
+    :param addr: address to test
+    :return: bool: True if provided address is valid
+    """
+    from ipaddress import ip_network
+    try:
+        if '-' in addr: # If we are checking a range, validate both address's individually
+            split = addr.split('-')
+            return is_valid_ipv4_address_or_range(split[0]) and is_valid_ipv4_address_or_range(split[1])
+        else:
+            return ip_network(addr).version == 4
+    except:
+        return False
+
+def is_valid_ipv6_address_or_range(addr: str) -> bool:
+    """
+    Validates if the provided address is a valid IPv4, CIDR or IPv4 range
+    :param addr: address to test
+    :return: bool: True if provided address is valid
+    """
+    from ipaddress import ip_network
+    try:
+        if '-' in addr: # If we are checking a range, validate both address's individually
+            split = addr.split('-')
+            return is_valid_ipv6_address_or_range(split[0]) and is_valid_ipv6_address_or_range(split[1])
+        else:
+            return ip_network(addr).version == 6
+    except:
+        return False
+
+
+def get_interfaces_by_ip(ip_address: str) -> list:
+    """
+    Return a list of all interface names assigned the given IP address.
+    Args:
+        ip_address (str): The IP address to search for.
+    Returns:
+        list: List of interface names (str) that have the given IP address assigned.
+              Returns an empty list if no interface has the IP assigned.
+    """
+    import netifaces
+    from vyos.template import is_ipv6
+
+    addr_type = AF_INET
+    if is_ipv6(ip_address):
+        addr_type = AF_INET6
+
+    ifaces = []
+    for interface in netifaces.interfaces():
+        addresses = netifaces.ifaddresses(interface)
+        for addr_info in addresses.get(addr_type, []):
+            if addr_info.get('addr') == ip_address:
+                ifaces.append(interface)
+    return ifaces

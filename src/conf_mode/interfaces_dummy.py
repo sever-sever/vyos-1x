@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,6 +18,9 @@ from sys import exit
 
 from vyos.config import Config
 from vyos.configdict import get_interface_dict
+from vyos.configdict import is_vrf_changed
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configverify import verify_vrf
 from vyos.configverify import verify_address
 from vyos.configverify import verify_bridge_delete
@@ -29,7 +32,7 @@ airbag.enable()
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least the
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least the
     interface name will be added or a deleted flag
     """
     if config:
@@ -37,7 +40,12 @@ def get_config(config=None):
     else:
         conf = Config()
     base = ['interfaces', 'dummy']
-    _, dummy = get_interface_dict(conf, base)
+    ifname, dummy = get_interface_dict(conf, base)
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
+
     return dummy
 
 def verify(dummy):
@@ -62,6 +70,9 @@ def apply(dummy):
         d.remove()
     else:
         d.update(dummy)
+
+    # run the dependents
+    call_dependents()
 
     return None
 

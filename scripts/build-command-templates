@@ -3,7 +3,7 @@
 #    build-command-template: converts new style command definitions in XML
 #      to the old style (bunch of dirs and node.def's) command templates
 #
-#    Copyright (C) 2017 VyOS maintainers <maintainers@vyos.net>
+#    Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 #    This library is free software; you can redistribute it and/or
 #    modify it under the terms of the GNU Lesser General Public
@@ -76,7 +76,7 @@ except Exception as e:
     sys.exit(1)
 
 if not os.access(output_dir, os.W_OK):
-    print("The output directory {0} is not writeable".format(output_dir))
+    print("The output directory {0} is not writable".format(output_dir))
     sys.exit(1)
 
 ## If we got this far, everything must be ok and we can convert the file
@@ -177,9 +177,11 @@ def get_properties(p, default=None):
         for vcg in vcge:
             group_validator_string = group_validator_string + " --grp " + collect_validators(vcg)
 
+    silent = " --silent" if p.findall("constraintSilenceOutput") else ""
+
     if vce is not None or len(vcge):
         validator_script = '${vyos_libexec_dir}/validate-value'
-        validator_string = "exec \"{0} {1} {2} --value \\\'$VAR(@)\\\'\"; \"{3}\"".format(validator_script, distinct_validator_string, group_validator_string, error_msg)
+        validator_string = "exec \"{0} {1} {2} --value \\\'$VAR(@)\\\'{3}\"; \"{4}\"".format(validator_script, distinct_validator_string, group_validator_string, silent, error_msg)
 
         props["constraint"] = validator_string
 

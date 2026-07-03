@@ -1,4 +1,4 @@
-# Copyright 2023-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -95,29 +95,54 @@ def get_dependency_dict(config: 'Config') -> dict:
         setattr(config, 'cached_dependency_dict', d)
     return d
 
-def run_config_mode_script(script: str, config: 'Config'):
+def run_config_mode_script(target: str, config: 'Config'):
+    script = target + '.py'
     path = os.path.join(directories['conf_mode'], script)
     name = canon_name(script)
     mod = load_as_module(name, path)
 
     config.set_level([])
+    dry_run = config.get_bool_attr('dry_run')
     try:
         c = mod.get_config(config)
         mod.verify(c)
-        mod.generate(c)
-        mod.apply(c)
+        if not dry_run:
+            mod.generate(c)
+            mod.apply(c)
+        else:
+            if hasattr(mod, 'call_dependents'):
+                mod.call_dependents()
     except (VyOSError, ConfigError) as e:
         raise ConfigError(str(e)) from e
 
+def run_conditionally(target: str, tagnode: str, config: 'Config'):
+    tag_ext = f'_{tagnode}' if tagnode else ''
+    script_name = f'{target}{tag_ext}'
+
+    scripts_called = getattr(config, 'scripts_called', [])
+    commit_scripts = getattr(config, 'commit_scripts', [])
+
+    debug_print(f'scripts_called: {scripts_called}')
+    debug_print(f'commit_scripts: {commit_scripts}')
+
+    if script_name in commit_scripts and script_name not in scripts_called:
+        debug_print(f'dependency {script_name} deferred to priority')
+        return
+
+    run_config_mode_script(target, config)
+
 def def_closure(target: str, config: 'Config',
                 tagnode: typing.Optional[str] = None) -> typing.Callable:
-    script = target + '.py'
     def func_impl():
+        tag_value = ''
         if tagnode is not None:
             os.environ['VYOS_TAGNODE_VALUE'] = tagnode
-        run_config_mode_script(script, config)
+            tag_value = tagnode
+        run_conditionally(target, tag_value, config)
+
     tag_ext = f'_{tagnode}' if tagnode is not None else ''
     func_impl.__name__ = f'{target}{tag_ext}'
+
     return func_impl
 
 def set_dependents(case: str, config: 'Config',
@@ -161,7 +186,7 @@ def graph_from_dependency_dict(d: dict) -> dict:
     for k in list(d):
         g[k] = set()
         # add the dependencies for every sub-case; should there be cases
-        # that are mutally exclusive in the future, the graphs will be
+        # that are mutually exclusive in the future, the graphs will be
         # distinguished
         for el in list(d[k]):
             g[k] |= set(d[k][el])

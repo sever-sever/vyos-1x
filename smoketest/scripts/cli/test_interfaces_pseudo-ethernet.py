@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2022 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,8 +17,12 @@
 import os
 import unittest
 
-from vyos.ifconfig import Section
 from base_interfaces_test import BasicInterfaceTest
+from base_vyostest_shim import VyOSUnitTestSHIM
+from vyos.configsession import ConfigSessionError
+from vyos.utils.process import cmd
+
+from vyos.ifconfig import Section
 
 class PEthInterfaceTest(BasicInterfaceTest.TestCase):
     @classmethod
@@ -42,5 +46,55 @@ class PEthInterfaceTest(BasicInterfaceTest.TestCase):
         # call base-classes classmethod
         super(PEthInterfaceTest, cls).setUpClass()
 
+    def test_anycast_gateway(self):
+        # Create the underlying bridge and sub-interface in the test
+
+        for i, peth in enumerate(self._interfaces):
+            eth = peth[1:]  # Convert peth0 -> eth0
+            br = f'br{i}'
+            vlan = str(i + 100)
+
+            # Format the MAC using index as a two-digit hexadecimal
+            mac_address = f'00:aa:aa:aa:aa:{i:02x}'
+
+            with self.subTest(peth=peth, eth=eth, mac_address=mac_address, i=i):
+                base_bridge_path = ['interfaces', 'bridge', br]
+                base_br_member_path = base_bridge_path + ['member', 'interface']
+
+                self.cli_set(base_bridge_path + ['enable-vlan'])
+                self.cli_set(base_br_member_path + [eth, 'native-vlan', vlan])
+                self.cli_set(base_br_member_path + [f'vxlan{i}'])
+                self.cli_set(base_bridge_path + ['vif', vlan])
+
+                self.cli_set(
+                    self._base_path + [peth, 'source-interface', f'{br}.{vlan}']
+                )
+                self.cli_set(self._base_path + [peth, 'anycast-gateway'])
+
+                # Anycast gateway requires MAC
+                with self.assertRaises(ConfigSessionError):
+                    self.cli_commit()
+
+                self.cli_set(self._base_path + [peth, 'mac', mac_address])
+                self.cli_commit()
+
+                # Verify FDB entry exists with flag
+                fdb = cmd(f'bridge fdb show dev {br}')
+                self.assertIn(f'{mac_address} master {br} permanent', fdb)
+                self.assertIn(f'{mac_address} self permanent', fdb)
+
+                # Then remove just the anycast-gateway flag
+                self.cli_delete(self._base_path + [peth, 'anycast-gateway'])
+                self.cli_commit()
+
+                fdb = cmd(f'bridge fdb show dev {br}')
+                self.assertNotIn(f'{mac_address} master {br} permanent', fdb)
+
+                # Clean up temp bridge and peth
+                self.cli_delete(self._base_path + [peth])
+                self.cli_delete(base_bridge_path)
+                self.cli_commit()
+
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

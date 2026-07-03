@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -20,10 +20,8 @@ import unittest
 from base_vyostest_shim import VyOSUnitTestSHIM
 from vyos.configsession import ConfigSessionError
 
-
 base_path = ['nat', 'cgnat']
 nftables_cgnat_config = '/run/nftables-cgnat.nft'
-
 
 class TestCGNAT(VyOSUnitTestSHIM.TestCase):
     @classmethod
@@ -38,6 +36,9 @@ class TestCGNAT(VyOSUnitTestSHIM.TestCase):
         self.cli_delete(base_path)
         self.cli_commit()
         self.assertFalse(os.path.exists(nftables_cgnat_config))
+
+        # always forward to base class
+        super().tearDown()
 
     def test_cgnat(self):
         internal_name = 'vyos-int-01'
@@ -135,4 +136,4 @@ class TestCGNAT(VyOSUnitTestSHIM.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

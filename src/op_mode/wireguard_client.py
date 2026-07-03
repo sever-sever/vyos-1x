@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -33,7 +33,7 @@ server_config = """WireGuard client configuration for interface: {{ interface }}
 
 To enable this configuration on a VyOS router you can use the following commands:
 
-=== VyOS (server) configurtation ===
+=== VyOS (server) configuration ===
 
 {% for addr in address if address is defined %}
 set interfaces wireguard {{ interface }} peer {{ name }} allowed-ips '{{ addr }}'

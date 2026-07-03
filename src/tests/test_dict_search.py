@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -44,6 +44,14 @@ class TestDictSearch(TestCase):
         self.assertEqual(dict_search('non_existing', data), None)
         self.assertEqual(dict_search('non.existing.fancy.key', data), None)
 
+    def test_non_existing_keys_with_default_positional(self):
+        # TestDictSearch: Return a default value when querying for non-existent key (positional arg)
+        self.assertEqual(dict_search('non.existing.fancy.key', data, 'test'), 'test')
+
+    def test_non_existing_keys_with_default_named(self):
+        # TestDictSearch: Return a default value when querying for non-existent key (named arg)
+        self.assertEqual(dict_search('non.existing.fancy.key', data, default='test'), 'test')
+		
     def test_string(self):
         # TestDictSearch: Return value when querying string
         self.assertEqual(dict_search('string', data), data['string'])

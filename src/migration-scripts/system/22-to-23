@@ -1,4 +1,4 @@
-# Copyright 2022-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -22,7 +22,7 @@ def migrate(config: ConfigTree) -> None:
         # Nothing to do
         return
 
-    # T4346: drop support to disbale IPv6 address family within the OS Kernel
+    # T4346: drop support to disable IPv6 address family within the OS Kernel
     if config.exists(base + ['disable']):
         config.delete(base + ['disable'])
         # IPv6 address family disable was the only CLI option set - we can cleanup

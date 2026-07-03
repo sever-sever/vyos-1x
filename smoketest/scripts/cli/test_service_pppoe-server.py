@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2022-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,10 +17,12 @@
 import unittest
 
 from base_accel_ppp_test import BasicAccelPPPTest
+from base_vyostest_shim import VyOSUnitTestSHIM
 
 from configparser import ConfigParser
 from vyos.utils.file import read_file
 from vyos.template import range_to_regex
+from vyos.configsession import ConfigSessionError
 
 local_if = ['interfaces', 'dummy', 'dum667']
 ac_name = 'ACN'
@@ -38,6 +40,7 @@ class TestServicePPPoEServer(BasicAccelPPPTest.TestCase):
 
     def tearDown(self):
         self.cli_delete(local_if)
+        # always forward to base class
         super().tearDown()
 
     def verify(self, conf):
@@ -133,6 +136,12 @@ class TestServicePPPoEServer(BasicAccelPPPTest.TestCase):
         # Test configuration of local authentication for PPPoE server
         self.basic_config()
 
+        self.set(['interface', interface, 'vlan-mon'])
+
+        # cannot use option "vlan-mon" if no "vlan" set
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
         for vlan in vlans:
             self.set(['interface', interface, 'vlan', vlan])
 
@@ -188,6 +197,22 @@ class TestServicePPPoEServer(BasicAccelPPPTest.TestCase):
         config = read_file(self._config_file)
         self.assertIn('any-login=1', config)
 
+    def test_pppoe_server_accept_service(self):
+        services = ['user1-service', 'user2-service']
+        self.basic_config()
+
+        for service in services:
+            self.set(['service-name', service])
+        self.set(['accept-any-service'])
+        self.set(['accept-blank-service'])
+        self.cli_commit()
+
+        # Validate configuration values
+        config = read_file(self._config_file)
+        self.assertIn(f'service-name={",".join(services)}', config)
+        self.assertIn('accept-any-service=1', config)
+        self.assertIn('accept-blank-service=1', config)
+
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,23 +17,28 @@
 import os
 import re
 
-from sys import exit
+from glob import glob
 
+from sys import exit
 from vyos.base import Warning
 from vyos.config import Config
 from vyos.configdict import is_node_changed
-from vyos.configdiff import get_config_diff, Diff
+from vyos.configdiff import Diff, get_config_diff
 from vyos.configdep import set_dependents, call_dependents
 from vyos.configverify import verify_interface_exists
 from vyos.ethtool import Ethtool
 from vyos.firewall import fqdn_config_parse
-from vyos.firewall import geoip_update
+from vyos.geoip import geoip_refresh, geoip_update
 from vyos.template import render
+from vyos.utils.dict import dict_search
 from vyos.utils.dict import dict_search_args
 from vyos.utils.dict import dict_search_recursive
+from vyos.utils.file import write_file
 from vyos.utils.process import call
 from vyos.utils.process import cmd
 from vyos.utils.process import rc_cmd
+from vyos.utils.network import get_vrf_members
+from vyos.utils.network import get_interface_vrf
 from vyos import ConfigError
 from vyos import airbag
 from subprocess import run as subp_run
@@ -41,6 +46,9 @@ from subprocess import run as subp_run
 airbag.enable()
 
 nftables_conf = '/run/nftables.conf'
+domain_resolver_usage = '/run/use-vyos-domain-resolver-firewall'
+firewall_config_dir = "/config/firewall"
+
 sysctl_file = r'/run/sysctl/10-vyos-firewall.conf'
 
 valid_groups = [
@@ -49,7 +57,8 @@ valid_groups = [
     'network_group',
     'port_group',
     'interface_group',
-    ## Added for group ussage in bridge firewall
+    'remote_group',
+    ## Added for group usage in bridge firewall
     'ipv4_address_group',
     'ipv6_address_group',
     'ipv4_network_group',
@@ -71,42 +80,30 @@ snmp_event_source = 1
 snmp_trap_mib = 'VYATTA-TRAP-MIB'
 snmp_trap_name = 'mgmtEventTrap'
 
-def geoip_updated(conf, firewall):
-    diff = get_config_diff(conf)
-    node_diff = diff.get_child_nodes_diff(['firewall'], expand_nodes=Diff.DELETE, recursive=True)
+def geoip_sets(firewall):
+    out = {'name': [], 'ipv6_name': []}
 
-    out = {
-        'name': [],
-        'ipv6_name': [],
-        'deleted_name': [],
-        'deleted_ipv6_name': []
-    }
-    updated = False
-
-    for key, path in dict_search_recursive(firewall, 'geoip'):
-        set_name = f'GEOIP_CC_{path[1]}_{path[2]}_{path[4]}'
+    for _, path in dict_search_recursive(firewall, 'country_code'):
         if (path[0] == 'ipv4'):
-            out['name'].append(set_name)
+            out['name'].append(f'GEOIP_CC_{path[1]}_{path[2]}_{path[4]}')
         elif (path[0] == 'ipv6'):
-            set_name = f'GEOIP_CC6_{path[1]}_{path[2]}_{path[4]}'
-            out['ipv6_name'].append(set_name)
+            out['ipv6_name'].append(f'GEOIP_CC6_{path[1]}_{path[2]}_{path[4]}')
 
-        updated = True
+    for _, path in dict_search_recursive(firewall, 'asn'):
+        if (path[0] == 'ipv4'):
+            out['name'].append(f'GEOIP_ASN_{path[1]}_{path[2]}_{path[4]}')
+        elif (path[0] == 'ipv6'):
+            out['ipv6_name'].append(f'GEOIP_ASN6_{path[1]}_{path[2]}_{path[4]}')
 
-    if 'delete' in node_diff:
-        for key, path in dict_search_recursive(node_diff['delete'], 'geoip'):
-            set_name = f'GEOIP_CC_{path[1]}_{path[2]}_{path[4]}'
-            if (path[0] == 'ipv4'):
-                out['deleted_name'].append(set_name)
-            elif (path[0] == 'ipv6'):
-                set_name = f'GEOIP_CC_{path[1]}_{path[2]}_{path[4]}'
-                out['deleted_ipv6_name'].append(set_name)
-            updated = True
+    return out
 
-    if updated:
-        return out
-
-    return False
+def geoip_updated(conf):
+    D = get_config_diff(conf, key_mangling=('-', '_'))
+    diff = D.get_child_nodes_diff(['firewall'],
+                                  expand_nodes=Diff.ADD | Diff.DELETE,
+                                  recursive=True)
+    return any(any(dict_search_recursive(diff.get(section, {}), 'geoip'))
+               for section in ('add', 'delete'))
 
 def get_config(config=None):
     if config:
@@ -126,9 +123,40 @@ def get_config(config=None):
         # Update nat and policy-route as firewall groups were updated
         set_dependents('group_resync', conf)
 
-    firewall['geoip_updated'] = geoip_updated(conf, firewall)
+    firewall['geoip_sets'] = geoip_sets(firewall)
+    firewall['geoip_updated'] = geoip_updated(conf)
+    firewall['policy'] = conf.get_config_dict(
+        ['policy'], key_mangling=('-', '_'),
+        get_first_key=True, no_tag_node_value_mangle=True)
 
-    fqdn_config_parse(firewall)
+    fqdn_config_parse(firewall, 'firewall')
+
+    if not os.path.exists(nftables_conf):
+        firewall['first_install'] = True
+
+    if 'zone' in firewall:
+        for local_zone, local_zone_conf in firewall['zone'].items():
+            if 'local_zone' not in local_zone_conf:
+                # Get physical interfaces assigned to the zone if vrf is used:
+                local_zone_member = local_zone_conf.get('member', {})
+                if 'vrf' in local_zone_member:
+                    local_zone_conf['vrf_interfaces'] = {}
+                    for vrf_name in local_zone_member['vrf']:
+                        local_zone_conf['vrf_interfaces'][vrf_name] = get_vrf_members(
+                            vrf_name
+                        )
+                continue
+
+            local_zone_conf['from_local'] = {}
+            local_zone_conf['default_local'] = {}
+
+            for zone, zone_conf in firewall['zone'].items():
+                if zone == local_zone:
+                    continue
+                if 'from' in zone_conf and local_zone in zone_conf['from']:
+                    local_zone_conf['from_local'][zone] = zone_conf['from'][local_zone]
+                elif 'default_firewall' in zone_conf:
+                    local_zone_conf['default_local'][zone] = zone_conf['default_firewall']
 
     set_dependents('conntrack', conf)
 
@@ -167,6 +195,42 @@ def verify_jump_target(firewall, hook, jump_target, family, recursive=False):
 
         targets_seen.append(target)
 
+def is_node_empty(rule_conf):
+    is_empty_list = []
+    is_empty_list.append([
+                        ['add_address_to_group'],
+                        ['connection_status'],
+                        ['destination'],
+                        ['destination', 'group'],
+                        ['destination', 'geoip'],
+                        ['fragment'],
+                        ['gre'],
+                        ['gre', 'flags'],
+                        ['hop_limit'],
+                        ['icmp'],
+                        ['icmpv6'],
+                        ['inbound_interface'],
+                        ['ipsec'],
+                        ['limit'],
+                        ['log_options'],
+                        ['outbound_interface'],
+                        ['set'],
+                        ['source'],
+                        ['source', 'group'],
+                        ['source', 'geoip'],
+                        ['tcp'],
+                        ['tcp', 'flags'],
+                        ['time'],
+                        ['ttl'],
+                        ['vlan']
+                        ])
+
+    for node in is_empty_list[0]:
+        if dict_search_args(rule_conf, *node) == {}:
+            return True, node
+
+    return False, None
+
 def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
     if 'action' not in rule_conf:
         raise ConfigError('Rule action must be defined')
@@ -178,7 +242,7 @@ def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
         if 'jump' not in rule_conf['action']:
             raise ConfigError('jump-target defined, but action jump needed and it is not defined')
         target = rule_conf['jump_target']
-        if hook != 'name': # This is a bit clumsy, but consolidates a chunk of code. 
+        if hook != 'name': # This is a bit clumsy, but consolidates a chunk of code.
             verify_jump_target(firewall, hook, target, family, recursive=True)
         else:
             verify_jump_target(firewall, hook, target, family, recursive=False)
@@ -191,6 +255,8 @@ def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
 
         if not dict_search_args(firewall, 'flowtable', offload_target):
             raise ConfigError(f'Invalid offload-target. Flowtable "{offload_target}" does not exist on the system')
+    elif 'offload_target' in rule_conf:
+        Warning('offload-target is specified but action is not set to "offload"')
 
     if rule_conf['action'] != 'synproxy' and 'synproxy' in rule_conf:
         raise ConfigError('"synproxy" option allowed only for action synproxy')
@@ -201,6 +267,24 @@ def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
             raise ConfigError('synproxy TCP MSS is not defined')
         if rule_conf.get('protocol', {}) != 'tcp':
             raise ConfigError('For action "synproxy" the protocol must be set to TCP')
+
+    if 'state' in rule_conf:
+        disable_conntrack = dict_search(f'{family}.{hook}.{priority}.disable_conntrack', firewall)
+        conntrack_disabled_list = []
+
+        # Check if conntrack is disabled in the input or output chain
+        for nft_chain in ['input', 'output']:
+            if dict_search(f'{family}.{nft_chain}.filter.disable_conntrack', firewall) == {}:
+                conntrack_disabled_list.append(nft_chain)
+
+        # If conntrack is disabled in the input or output chain,
+        # state cannot be matched in the input or output chain
+        if hook in ['input', 'output'] and conntrack_disabled_list:
+            raise ConfigError(f'state cannot be matched in {hook} when conntrack is disabled in input or output chains')
+        # If conntrack is disabled in the forward chain,
+        # state cannot be matched in the forward chain
+        if hook == 'forward' and disable_conntrack == {}:
+            raise ConfigError(f'state cannot be matched in {hook} when conntrack is disabled in {hook} chain')
 
     if 'queue_options' in rule_conf:
         if 'queue' not in rule_conf['action']:
@@ -214,6 +298,11 @@ def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
     if 'fragment' in rule_conf:
         if {'match_frag', 'match_non_frag'} <= set(rule_conf['fragment']):
             raise ConfigError('Cannot specify both "match-frag" and "match-non-frag"')
+
+    node_empty, node_name = is_node_empty(rule_conf)
+    if node_empty:
+        tmp = ' '.join(node_name).replace('_', '-')
+        raise ConfigError(f'Configuration node {tmp} may not be empty')
 
     if 'limit' in rule_conf:
         if 'rate' in rule_conf['limit']:
@@ -241,12 +330,12 @@ def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
 
             if dict_search_args(rule_conf, 'gre', 'flags', 'checksum') is None:
                 # There is no builtin match in nftables for the GRE key, so we need to do a raw lookup.
-                # The offset of the key within the packet shifts depending on the C-flag. 
-                # 99% of the time, nobody will have checksums enabled - it's usually a manual config option. 
-                # We can either assume it is unset unless otherwise directed 
+                # The offset of the key within the packet shifts depending on the C-flag.
+                # 99% of the time, nobody will have checksums enabled - it's usually a manual config option.
+                # We can either assume it is unset unless otherwise directed
                 # (confusing, requires doco to explain why it doesn't work sometimes)
-                # or, demand an explicit selection to be made for this specific match rule. 
-                # This check enforces the latter. The user is free to create rules for both cases. 
+                # or, demand an explicit selection to be made for this specific match rule.
+                # This check enforces the latter. The user is free to create rules for both cases.
                 raise ConfigError('Matching GRE tunnel key requires an explicit checksum flag match. For most cases, use "gre flags checksum unset"')
 
             if dict_search_args(rule_conf, 'gre', 'flags', 'key', 'unset') is not None:
@@ -259,7 +348,7 @@ def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
                 if gre_inner_value < 0 or gre_inner_value > 65535:
                     raise ConfigError('inner-proto outside valid ethertype range 0-65535')
             except ValueError:
-                pass # Symbolic constant, pre-validated before reaching here. 
+                pass # Symbolic constant, pre-validated before reaching here.
 
     tcp_flags = dict_search_args(rule_conf, 'tcp', 'flags')
     if tcp_flags:
@@ -285,9 +374,13 @@ def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
             if len({'address', 'fqdn', 'geoip'} & set(side_conf)) > 1:
                 raise ConfigError('Only one of address, fqdn or geoip can be specified')
 
+            if 'geoip' in side_conf:
+                if len({'asn', 'country_code'} & set(side_conf['geoip'])) > 1:
+                    raise ConfigError('Only one of asn or country-code can be specified')
+
             if 'group' in side_conf:
-                if len({'address_group', 'network_group', 'domain_group'} & set(side_conf['group'])) > 1:
-                    raise ConfigError('Only one address-group, network-group or domain-group can be specified')
+                if len({'address_group', 'network_group', 'domain_group', 'remote_group'} & set(side_conf['group'])) > 1:
+                    raise ConfigError('Only one address-group, network-group, remote-group or domain-group can be specified')
 
                 for group in valid_groups:
                     if group in side_conf['group']:
@@ -307,7 +400,7 @@ def verify_rule(firewall, family, hook, priority, rule_id, rule_conf):
 
                         error_group = fw_group.replace("_", "-")
 
-                        if group in ['address_group', 'network_group', 'domain_group']:
+                        if group in ['address_group', 'network_group', 'domain_group', 'remote_group']:
                             types = [t for t in ['address', 'fqdn', 'geoip'] if t in side_conf]
                             if types:
                                 raise ConfigError(f'{error_group} and {types[0]} cannot both be defined')
@@ -402,7 +495,7 @@ def verify(firewall):
                 raise ConfigError(f'Flowtable "{flowtable}" requires at least one interface')
 
             for ifname in flowtable_conf['interface']:
-                verify_interface_exists(ifname)
+                verify_interface_exists(firewall, ifname)
 
             if dict_search_args(flowtable_conf, 'offload') == 'hardware':
                 interfaces = flowtable_conf['interface']
@@ -410,12 +503,49 @@ def verify(firewall):
                 for ifname in interfaces:
                     verify_hardware_offload(ifname)
 
+    if dict_search_args(firewall, 'global_options', 'geoip', 'provider') == 'maxmind':
+        geoip_options = dict_search_args(firewall, 'global_options', 'geoip')
+        required_keys = ['maxmind_account_id', 'maxmind_license_key']
+        if not all(key in geoip_options for key in required_keys):
+            raise ConfigError('MaxMind GeoIP provider requires maxmind-account-id and maxmind-license-key')
+
+    if dict_search('global_options.state_policy', firewall) is not None:
+        # Generate list of chains where conntrack is disabled
+        conntrack_disabled_list = []
+        for inet_family in ['ipv4', 'ipv6']:
+            for nft_chain in ['input', 'forward', 'output']:
+                if dict_search(f'{inet_family}.{nft_chain}.filter.disable_conntrack', firewall) == {}:
+                    conntrack_disabled_list.append(f'{inet_family}-{nft_chain}')
+
+        # If conntrack is disabled in any chain,
+        # print a warning message
+        if conntrack_disabled_list:
+            Warning(f'global-state: conntrack is disabled in the following chains: {", ".join(conntrack_disabled_list)}')
+
+    if 'offload' in firewall.get('global_options', {}).get('state_policy', {}):
+        offload_path = firewall['global_options']['state_policy']['offload']
+        if 'offload_target' not in offload_path:
+            raise ConfigError('offload-target must be specified')
+
+        offload_target = offload_path['offload_target']
+
+        if not dict_search_args(firewall, 'flowtable', offload_target):
+            raise ConfigError(f'Invalid offload-target. Flowtable "{offload_target}" does not exist on the system')
+
     if 'group' in firewall:
         for group_type in nested_group_types:
             if group_type in firewall['group']:
                 groups = firewall['group'][group_type]
                 for group_name, group in groups.items():
                     verify_nested_group(group_name, group, groups, [])
+
+        if 'remote_group' in firewall['group']:
+            for group_name, group in firewall['group']['remote_group'].items():
+                if 'url' not in group:
+                    raise ConfigError(f'remote-group {group_name} must have a url configured')
+
+    offload_chains_v4 = set()
+    offload_chains_v6 = set()
 
     for family in ['ipv4', 'ipv6', 'bridge']:
         if family in firewall:
@@ -436,30 +566,53 @@ def verify(firewall):
                             for rule_id, rule_conf in priority_conf['rule'].items():
                                 verify_rule(firewall, family, chain, priority, rule_id, rule_conf)
 
+                                if chain == 'name' and rule_conf['action'] == 'offload':
+                                    if family == 'ipv4':
+                                        offload_chains_v4.add(priority)
+                                    elif family == 'ipv6':
+                                        offload_chains_v6.add(priority)
+
     local_zone = False
     zone_interfaces = []
+    zone_vrf = []
 
     if 'zone' in firewall:
         for zone, zone_conf in firewall['zone'].items():
-            if 'local_zone' not in zone_conf and 'interface' not in zone_conf:
+            if 'local_zone' not in zone_conf and 'member' not in zone_conf:
                 raise ConfigError(f'Zone "{zone}" has no interfaces and is not the local zone')
 
             if 'local_zone' in zone_conf:
                 if local_zone:
                     raise ConfigError('There cannot be multiple local zones')
-                if 'interface' in zone_conf:
+                if 'member' in zone_conf:
                     raise ConfigError('Local zone cannot have interfaces assigned')
                 if 'intra_zone_filtering' in zone_conf:
                     raise ConfigError('Local zone cannot use intra-zone-filtering')
                 local_zone = True
 
-            if 'interface' in zone_conf:
-                found_duplicates = [intf for intf in zone_conf['interface'] if intf in zone_interfaces]
+            if 'member' in zone_conf:
+                if 'interface' in zone_conf['member']:
+                    for iface in zone_conf['member']['interface']:
 
-                if found_duplicates:
-                    raise ConfigError(f'Interfaces cannot be assigned to multiple zones')
+                        if iface in zone_interfaces:
+                            raise ConfigError(f'Interfaces cannot be assigned to multiple zones')
 
-                zone_interfaces += zone_conf['interface']
+                        iface_vrf = get_interface_vrf(iface)
+                        if iface_vrf != 'default':
+                            Warning(f"Interface {iface} assigned to zone {zone} is in VRF {iface_vrf}. This might not work as expected.")
+                        zone_interfaces.append(iface)
+
+                if 'vrf' in zone_conf['member']:
+                    for vrf in zone_conf['member']['vrf']:
+                        if vrf in zone_vrf:
+                            raise ConfigError(f'VRF cannot be assigned to multiple zones')
+                        zone_vrf.append(vrf)
+
+            if 'vrf_interfaces' in zone_conf:
+                for vrf_name, vrf_interfaces in zone_conf['vrf_interfaces'].items():
+                    if not vrf_interfaces:
+                        raise ConfigError(
+                            f'VRF "{vrf_name}" cannot be a member of any zone. It does not contain any interfaces.')
 
             if 'intra_zone_filtering' in zone_conf:
                 intra_zone = zone_conf['intra_zone_filtering']
@@ -492,27 +645,41 @@ def verify(firewall):
                     if v6_name and not dict_search_args(firewall, 'ipv6', 'name', v6_name):
                         raise ConfigError(f'Firewall ipv6-name "{v6_name}" does not exist')
 
+                    if 'local_zone' in zone_conf or 'local_zone' in firewall['zone'][from_zone]:
+                        if (v4_name and v4_name in offload_chains_v4) or \
+                            (v6_name and v6_name in offload_chains_v6):
+                            raise ConfigError('Cannot use a firewall chain with offloading on local zone')
+
+            if 'default_firewall' in zone_conf:
+                v4_name = dict_search_args(zone_conf, 'default_firewall', 'name')
+                if v4_name and not dict_search_args(firewall, 'ipv4', 'name', v4_name):
+                    raise ConfigError(f'Firewall name "{v4_name}" does not exist')
+
+                v6_name = dict_search_args(zone_conf, 'default_firewall', 'ipv6_name')
+                if v6_name and not dict_search_args(firewall, 'ipv6', 'name', v6_name):
+                    raise ConfigError(f'Firewall ipv6-name "{v6_name}" does not exist')
+
+                if not v4_name and not v6_name:
+                    raise ConfigError('No firewall names specified for default-firewall')
+
+                if (v4_name and v4_name in offload_chains_v4) or \
+                    (v6_name and v6_name in offload_chains_v6):
+                    raise ConfigError('Cannot use a chain with offloading for zone default-firewall')
+
     return None
 
 def generate(firewall):
-    if not os.path.exists(nftables_conf):
-        firewall['first_install'] = True
-
-    if 'zone' in firewall:
-        for local_zone, local_zone_conf in firewall['zone'].items():
-            if 'local_zone' not in local_zone_conf:
-                continue
-
-            local_zone_conf['from_local'] = {}
-
-            for zone, zone_conf in firewall['zone'].items():
-                if zone == local_zone or 'from' not in zone_conf:
-                    continue
-                if local_zone in zone_conf['from']:
-                    local_zone_conf['from_local'][zone] = zone_conf['from'][local_zone]
-
     render(nftables_conf, 'firewall/nftables.j2', firewall)
     render(sysctl_file, 'firewall/sysctl-firewall.conf.j2', firewall)
+
+    # Cleanup remote-group cache files
+    if os.path.exists(firewall_config_dir):
+        for fw_file in os.listdir(firewall_config_dir):
+            # Delete matching files in 'config/firewall' that no longer exist as a remote-group in config
+            if fw_file.startswith("R_") and fw_file.endswith(".txt"):
+                if 'group' not in firewall or 'remote_group' not in firewall['group'] or fw_file[2:-4] not in firewall['group']['remote_group'].keys():
+                    os.unlink(os.path.join(firewall_config_dir, fw_file))
+
     return None
 
 def parse_firewall_error(output):
@@ -570,19 +737,22 @@ def apply(firewall):
 
     call_dependents()
 
-    # T970 Enable a resolver (systemd daemon) that checks
-    # domain-group/fqdn addresses and update entries for domains by timeout
-    # If router loaded without internet connection or for synchronization
-    domain_action = 'stop'
-    if dict_search_args(firewall, 'group', 'domain_group') or firewall['ip_fqdn'] or firewall['ip6_fqdn']:
-        domain_action = 'restart'
+    ## DOMAIN RESOLVER
+    domain_action = 'restart'
+    if dict_search_args(firewall, 'group', 'remote_group') or dict_search_args(firewall, 'group', 'domain_group') or firewall['ip_fqdn'].items() or firewall['ip6_fqdn'].items():
+        text = f'# Automatically generated by firewall.py\nThis file indicates that vyos-domain-resolver service is used by the firewall.\n'
+        write_file(domain_resolver_usage, text)
+    else:
+        if os.path.exists(domain_resolver_usage):
+            os.unlink(domain_resolver_usage)
+        if not glob('/run/use-vyos-domain-resolver*'):
+            domain_action = 'stop'
     call(f'systemctl {domain_action} vyos-domain-resolver.service')
 
-    if firewall['geoip_updated']:
-        # Call helper script to Update set contents
-        if 'name' in firewall['geoip_updated'] or 'ipv6_name' in firewall['geoip_updated']:
+    if firewall['geoip_sets']['name'] or firewall['geoip_sets']['ipv6_name']:
+        if firewall['geoip_updated'] or not geoip_refresh():
             print('Updating GeoIP. Please wait...')
-            geoip_update(firewall)
+            geoip_update(firewall=firewall, policy=firewall['policy'])
 
     return None
 

@@ -27,8 +27,53 @@ CF=/opt/vyatta/etc/config/config.boot
 ADMIN=vyos
 
 set_encrypted_password() {
-    sed -i \
-       -e "/ user $1 {/,/encrypted-password/s/encrypted-password .*\$/encrypted-password \"$2\"/" $3
+    local user_raw=$1 epwd=$2 file=$3
+    local user
+
+    # Escape the username before using it in awk/sed regexes
+    user=$(printf '%s' "$user_raw" | sed -e 's/\./\\&/g')
+
+    # Check if encrypted-password exists within this specific user's block
+    if awk "/ user $user \{/{f=1} f && /encrypted-password/{found=1; exit} f && /^        }/{exit} END{exit !found}" "$file"; then
+        # Replace existing encrypted-password line
+        sed -i \
+           -e "/ user $user {/,/encrypted-password/s/encrypted-password .*\$/encrypted-password \"$epwd\"/" "$file"
+    else
+        # Key-only account: no encrypted-password or plaintext-password line exists
+        # in this user's block (e.g. authentication via SSH key only).
+        if awk "/ user $user \{/{f=1} f && /authentication \{/{found=1; exit} f && /^        \}/{exit} END{exit !found}" "$file"; then
+            # 'authentication' block exists - insert encrypted-password inside it
+            sed -i \
+               -e "/ user $user {/,/authentication {/s/\(authentication {\)\$/\1\n                encrypted-password \"$epwd\"/" "$file"
+        else
+            # No authentication block at all. Without this branch the sed range
+            # above would overrun the block boundary and corrupt a later account's
+            # authentication block. Build the section from scratch instead.
+            sed -i \
+               -e "/ user $user {/a\\
+            authentication {\\
+                encrypted-password \"$epwd\"\\
+                plaintext-password \"\"\\
+            }" "$file"
+        fi
+    fi
+}
+
+clear_plaintext_password() {
+    local user_raw=$1 file=$2
+    local user
+
+    # Escape the username before using it in awk/sed regexes
+    user=$(printf '%s' "$user_raw" | sed -e 's/\./\\&/g')
+
+    # Only clear if plaintext-password exists within this specific user's block.
+    # Without this guard, if the user has no plaintext-password line the sed
+    # range never closes inside their block and spills into the next account
+    # that does have one, wiping that account's plaintext-password instead.
+    if awk "/ user $user \{/{f=1} f && /plaintext-password/{found=1; exit} f && /^        \}/{exit} END{exit !found}" "$file"; then
+        sed -i \
+           -e "/ user $user {/,/plaintext-password/s/plaintext-password .*\$/plaintext-password \"\"/" "$file"
+    fi
 }
 
 
@@ -54,17 +99,22 @@ change_password() {
 
     # set the password for the user then store it in the config
     # so the user is recreated on the next full system boot.
-    local epwd=$(mkpasswd --method=sha-512 "$pwd1")
+    local epwd=$(mkpasswd --method=yescrypt "$pwd1")
     # escape any slashes in resulting password
     local eepwd=$(sed 's:/:\\/:g' <<< $epwd)
     set_encrypted_password $user $eepwd $CF
+
+    # There is issue that 'set_encrypted_password' only handles the 'encrypted-password' line,
+    # but leaves any existing 'plaintext-password' untouched (T8346).
+    # We need to clear 'plaintext-password' for the user during the password change flow.
+    clear_plaintext_password $user $CF
 }
 
 # System is so messed up that doing anything would be a mistake
 dead() {
     echo $*
     echo
-    echo "This tool can only recover missing admininistrator password."
+    echo "This tool can only recover missing administrator password."
     echo "It is not a full system restore"
     echo
     echo -n "Hit return to reboot system: "
@@ -90,7 +140,7 @@ fi
 echo -n "Do you wish to reset the admin password? (y or n) "
 read -t $TIME_TO_WAIT response
 if [ "$?" != "0" ]; then
-    echo 
+    echo
     echo "Response not received in time."
     echo "The admin password will not be reset."
     echo "Rebooting in 5 seconds..."
@@ -127,7 +177,7 @@ fi
 
 # Leftover from V3.0
 if grep -q /opt/vyatta/etc/config /etc/fstab
-then 
+then
     echo "Mounting the config filesystem..."
     mount /opt/vyatta/etc/config/
 fi

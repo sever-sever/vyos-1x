@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -38,6 +38,8 @@ def ike_sa(peer, nat):
     peers = []
     for conn in sas:
         for name, sa in conn.items():
+            if peer and s(sa['remote-host']) != peer:
+                continue
             if name.startswith('peer_') and name in peers:
                 continue
             if nat and 'nat-local' not in sa:

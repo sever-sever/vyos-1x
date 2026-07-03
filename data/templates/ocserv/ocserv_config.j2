@@ -30,6 +30,15 @@ auth = "plain[otp=/run/ocserv/users.oath]"
 {%     else %}
 auth = "plain[/run/ocserv/ocpasswd]"
 {%     endif %}
+{% elif "certificate" in authentication.mode %}
+auth = "certificate"
+{%     if authentication.mode.certificate.user_identifier_field == "cn" %}
+cert-user-oid = 2.5.4.3
+{%     elif authentication.mode.certificate.user_identifier_field == "uid" %}
+cert-user-oid = 0.9.2342.19200300.100.1.1
+{%     else %}
+cert-user-oid = {{ authentication.mode.certificate.user_identifier_field }}
+{%     endif %}
 {% else %}
 auth = "plain[/run/ocserv/ocpasswd]"
 {% endif %}
@@ -39,6 +48,14 @@ auth = "plain[/run/ocserv/ocpasswd]"
 config-per-user = {{ authentication.identity_based_config.directory }}
 default-user-config = {{ authentication.identity_based_config.default_config }}
 {%     endif %}
+{% endif %}
+
+{% if script.connect is vyos_defined %}
+connect-script = {{ script.connect }}
+{% endif %}
+
+{% if script.disconnect is vyos_defined %}
+disconnect-script = {{ script.disconnect }}
 {% endif %}
 
 {% if ssl.certificate is vyos_defined %}

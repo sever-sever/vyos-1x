@@ -11,45 +11,55 @@
             "interfaces": [ "*" ],
             "dhcp-socket-type": "raw",
 {% endif %}
-            "service-sockets-max-retries": 5,
+            "service-sockets-max-retries": 60,
             "service-sockets-retry-wait-time": 5000
         },
         "control-socket": {
+{% if vrf_context is vyos_defined %}
             "socket-type": "unix",
-            "socket-name": "/run/kea/dhcp4-ctrl-socket"
+            "socket-name": "/var/run/kea/dhcp4-{{ vrf_context }}-ctrl-socket"
+{% else %}
+            "socket-type": "unix",
+            "socket-name": "/var/run/kea/dhcp4-ctrl-socket"
+{% endif %}
         },
         "lease-database": {
             "type": "memfile",
             "persist": true,
             "name": "{{ lease_file }}"
         },
+        "multi-threading": {
+            "enable-multi-threading": true
+        },
+{% if client_class is vyos_defined %}
+        "client-classes": {{ client_class | kea_client_class_json }},
+{% endif %}
         "option-def": [
-            {
-                "name": "rfc3442-static-route",
-                "code": 121,
-                "type": "record",
-                "array": true,
-                "record-types": "uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8"
-            },
-            {
-                "name": "windows-static-route",
-                "code": 249,
-                "type": "record",
-                "array": true,
-                "record-types": "uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8"
-            },
             {
                 "name": "wpad-url",
                 "code": 252,
                 "type": "string"
             },
             {
-                "name": "unifi-controller",
+                "name": "ubnt",
                 "code": 1,
                 "type": "ipv4-address",
-                "space": "ubnt"
+                "space": "vendor-encapsulated-options-space"
             }
         ],
+{% if dynamic_dns_update is vyos_defined %}
+        "dhcp-ddns": {
+            "enable-updates": true,
+            "server-ip": "127.0.0.1",
+            "server-port": 53001,
+            "sender-ip": "",
+            "sender-port": 0,
+            "max-queue-size": 1024,
+            "ncr-protocol": "UDP",
+            "ncr-format": "JSON"
+        },
+        {{ dynamic_dns_update | kea_dynamic_dns_update_main_json }}
+{% endif %}
         "hooks-libraries": [
 {% if high_availability is vyos_defined %}
             {
@@ -68,13 +78,38 @@
                 }
             },
 {% endif %}
+{% if any_ping_check is vyos_defined %}
+            {
+                "library": "/usr/lib/{{ machine }}-linux-gnu/kea/hooks/libdhcp_ping_check.so",
+                "parameters": {
+                    "enable-ping-check" : true,
+                    "min-ping-requests" : 1,
+                    "reply-timeout" : 100,
+                    "ping-cltt-secs" : 60,
+                    "ping-channel-threads" : 0
+                }
+            },
+{% endif %}
             {
                 "library": "/usr/lib/{{ machine }}-linux-gnu/kea/hooks/libdhcp_lease_cmds.so",
                 "parameters": {}
             }
         ],
 {% if shared_network_name is vyos_defined %}
-        "shared-networks": {{ shared_network_name | kea_shared_network_json }}
+        "shared-networks": {{ shared_network_name | kea_shared_network_json }},
 {% endif %}
+        "loggers": [
+            {
+                "name": "kea-dhcp4",
+                "output_options": [
+                    {
+                        "output": "stdout",
+                        "pattern": "%-5p %m\n"
+                    }
+                ],
+                "severity": "{{ log_level | upper }}",
+                "debuglevel": 0
+            }
+        ]
     }
 }

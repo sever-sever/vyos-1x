@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -55,7 +55,7 @@ class KeepalivedFifo:
         self._config_load()
         self.pipe_path = cmd_args.PIPE
 
-        # create queue for messages and events for syncronization
+        # create queue for messages and events for synchronization
         self.message_queue = Queue(maxsize=100)
         self.stopme = threading.Event()
         self.message_event = threading.Event()
@@ -111,7 +111,7 @@ class KeepalivedFifo:
             # wait for a new message event from pipe_wait
             self.message_event.wait()
             try:
-                # clear mesage event flag
+                # clear message event flag
                 self.message_event.clear()
                 # get all messages from queue and try to process them
                 while self.message_queue.empty() is not True:

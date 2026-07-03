@@ -6,12 +6,17 @@
 {% else %}
             "interfaces": [ "*" ],
 {% endif %}
-            "service-sockets-max-retries": 5,
+            "service-sockets-max-retries": 60,
             "service-sockets-retry-wait-time": 5000
         },
         "control-socket": {
+{% if vrf_context is vyos_defined %}
             "socket-type": "unix",
-            "socket-name": "/run/kea/dhcp6-ctrl-socket"
+            "socket-name": "/var/run/kea/dhcp6-{{ vrf_context }}-ctrl-socket"
+{% else %}
+            "socket-type": "unix",
+            "socket-name": "/var/run/kea/dhcp6-ctrl-socket"
+{% endif %}
         },
         "lease-database": {
             "type": "memfile",
@@ -54,8 +59,20 @@
 {% endif %}
         ],
 {% if shared_network_name is vyos_defined %}
-        "shared-networks": {{ shared_network_name | kea6_shared_network_json }}
+        "shared-networks": {{ shared_network_name | kea6_shared_network_json }},
 {% endif %}
-
+        "loggers": [
+            {
+                "name": "kea-dhcp6",
+                "output_options": [
+                    {
+                        "output": "stdout",
+                        "pattern": "%-5p %m\n"
+                    }
+                ],
+                "severity": "{{ log_level | upper }}",
+                "debuglevel": 0
+            }
+        ]
     }
 }

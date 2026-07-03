@@ -20,6 +20,7 @@ connlimit
 sigchld
 pppd_compat
 {% endif %}
+vyos_vpp
 
 [core]
 thread-count={{ thread_count }}
@@ -55,18 +56,30 @@ verbose=1
 ac-name={{ access_concentrator }}
 {% if interface is vyos_defined %}
 {%     for iface, iface_config in interface.items() %}
+{%         set vpp_cp_opt = ',vpp-cp=true' if iface_config.vpp_cp is vyos_defined else '' %}
 {%         if iface_config.vlan is not vyos_defined %}
-interface={{ iface }}
+interface={{ iface }}{{ vpp_cp_opt }}
 {%         else %}
 {%             for vlan in iface_config.vlan %}
 interface=re:^{{ iface }}\.{{ vlan | range_to_regex }}$
 {%             endfor %}
+{%             if iface_config.combined is vyos_defined %}
+interface={{ iface }}{{ vpp_cp_opt }}
+{%             endif %}
+{%             if iface_config.vlan_mon is vyos_defined %}
 vlan-mon={{ iface }},{{ iface_config.vlan | join(',') }}
+{%             endif %}
 {%         endif %}
 {%     endfor %}
 {% endif %}
 {% if service_name %}
 service-name={{ service_name | join(',') }}
+{% endif %}
+{% if accept_any_service is vyos_defined %}
+accept-any-service=1
+{% endif %}
+{% if accept_blank_service is vyos_defined %}
+accept-blank-service=1
 {% endif %}
 {% if pado_delay %}
 {%     set delay_without_sessions = pado_delay.delays_without_sessions[0] | default('0') %}

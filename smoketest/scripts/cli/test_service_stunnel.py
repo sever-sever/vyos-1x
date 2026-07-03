@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -182,6 +182,8 @@ class TestServiceStunnel(VyOSUnitTestSHIM.TestCase):
 
         # Check for stopped process
         self.assertFalse(process_named_running(PROCESS_NAME))
+        # always forward to base class
+        super().tearDown()
 
     def set_pki(self):
         self.cli_set(['pki', 'ca', 'ca-1', 'certificate', ca_certificate.replace('\n','')])
@@ -621,4 +623,4 @@ class TestServiceStunnel(VyOSUnitTestSHIM.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

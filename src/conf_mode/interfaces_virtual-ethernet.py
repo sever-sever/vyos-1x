@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2022-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,17 +19,22 @@ from sys import exit
 from vyos import ConfigError
 from vyos import airbag
 from vyos.config import Config
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configdict import get_interface_dict
+from vyos.configdict import is_vrf_changed
 from vyos.configverify import verify_address
 from vyos.configverify import verify_bridge_delete
 from vyos.configverify import verify_vrf
+from vyos.configverify import verify_mtu_ipv6
 from vyos.ifconfig import VethIf
+from vyos.utils.dict import dict_search
 from vyos.utils.network import interface_exists
 airbag.enable()
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at
     least the interface name will be added or a deleted flag
     """
     if config:
@@ -42,9 +47,17 @@ def get_config(config=None):
     # We need to know all other veth related interfaces as veth requires a 1:1
     # mapping for the peer-names. The Linux kernel automatically creates both
     # interfaces, the local one and the peer-name, but VyOS also needs a peer
-    # interfaces configrued on the CLI so we can assign proper IP addresses etc.
+    # interfaces configured on the CLI so we can assign proper IP addresses etc.
     veth['other_interfaces'] = conf.get_config_dict(base, key_mangling=('-', '_'),
                                      get_first_key=True, no_tag_node_value_mangle=True)
+
+    # Protocols static arp dependency
+    if 'static_arp' in veth:
+        set_dependents('static_arp', conf)
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
 
     return veth
 
@@ -62,6 +75,7 @@ def verify(veth):
         return None
 
     verify_vrf(veth)
+    verify_mtu_ipv6(veth)
     verify_address(veth)
 
     if 'peer_name' not in veth:
@@ -74,7 +88,7 @@ def verify(veth):
         raise ConfigError(f'Used peer-name "{peer_name}" on interface "{ifname}" ' \
                           'is not configured!')
 
-    if veth['other_interfaces'][peer_name]['peer_name'] != ifname:
+    if dict_search(f'other_interfaces.{peer_name}.peer_name', veth) != ifname:
         raise ConfigError(
             f'Configuration mismatch between "{ifname}" and "{peer_name}"!')
 
@@ -98,6 +112,9 @@ def apply(veth):
     if 'deleted' not in veth:
         p = VethIf(**veth)
         p.update(veth)
+
+    # run the dependents
+    call_dependents()
 
     return None
 

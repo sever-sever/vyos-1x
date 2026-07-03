@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2022 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -45,6 +45,8 @@ class TestServiceWebProxy(VyOSUnitTestSHIM.TestCase):
     def tearDown(self):
         self.cli_delete(base_path)
         self.cli_commit()
+        # always forward to base class
+        super().tearDown()
 
     def test_01_basic_proxy(self):
         default_cache = '100'
@@ -155,7 +157,7 @@ class TestServiceWebProxy(VyOSUnitTestSHIM.TestCase):
             self.cli_commit()
         self.cli_set(base_path + ['authentication', 'ldap', 'server', ldap_server])
 
-        # check validate() - LDAP password can not be set when bind-dn is not define
+        # check validate() - LDAP password cannot be set when bind-dn is not define
         self.cli_set(base_path + ['authentication', 'ldap', 'password', ldap_password])
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
@@ -297,6 +299,22 @@ class TestServiceWebProxy(VyOSUnitTestSHIM.TestCase):
         # Check for running process
         self.assertTrue(process_named_running(PROCESS_NAME))
 
+    def test_06_nocache_domain_proxy(self):
+        domains_nocache = ['test1.net', 'test2.net']
+        self.cli_set(base_path + ['listen-address', listen_ip])
+        for domain in domains_nocache:
+            self.cli_set(base_path + ['domain-noncache', domain])
+        # commit changes
+        self.cli_commit()
+
+        config = read_file(PROXY_CONF)
+
+        for domain in domains_nocache:
+            self.assertIn(f'acl NOCACHE dstdomain {domain}', config)
+        self.assertIn(f'no_cache deny NOCACHE', config)
+
+        # Check for running process
+        self.assertTrue(process_named_running(PROCESS_NAME))
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

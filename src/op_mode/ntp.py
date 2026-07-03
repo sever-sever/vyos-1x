@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -110,49 +110,62 @@ def _is_configured():
     if not config.exists("service ntp"):
         raise vyos.opmode.UnconfiguredSubsystem("NTP service is not enabled.")
 
+def _extend_command_vrf():
+    config = ConfigTreeQuery()
+    if config.exists('service ntp vrf'):
+        vrf = config.value('service ntp vrf')
+        return f'ip vrf exec {vrf} '
+    return ''
+
+
 def show_activity(raw: bool):
     _is_configured()
     command = f'chronyc'
 
     if raw:
-       command += f" -c activity"
-       return _get_raw_data(command)
+        command += f" -c activity"
+        return _get_raw_data(command)
     else:
-       command += f" activity"
-       return cmd(command)
+        command = _extend_command_vrf() + command
+        command += f" activity"
+        return cmd(command)
 
 def show_sources(raw: bool):
     _is_configured()
     command = f'chronyc'
 
     if raw:
-       command += f" -c sources"
-       return _get_raw_data(command)
+        command += f" -c sources"
+        return _get_raw_data(command)
     else:
-       command += f" sources -v"
-       return cmd(command)
+        command = _extend_command_vrf() + command
+        command += f" sources -v"
+        return cmd(command)
 
 def show_tracking(raw: bool):
     _is_configured()
     command = f'chronyc'
 
     if raw:
-       command += f" -c tracking"
-       return _get_raw_data(command)
+        command += f" -c tracking"
+        return _get_raw_data(command)
     else:
-       command += f" tracking"
-       return cmd(command)
+        command = _extend_command_vrf() + command
+        command += f" tracking"
+        return cmd(command)
 
 def show_sourcestats(raw: bool):
     _is_configured()
     command = f'chronyc'
 
     if raw:
-       command += f" -c sourcestats"
-       return _get_raw_data(command)
+        command += f" -c sourcestats"
+        return _get_raw_data(command)
     else:
-       command += f" sourcestats -v"
-       return cmd(command)
+        command = _extend_command_vrf() + command
+        command += f" sourcestats -v"
+        return cmd(command)
+
 
 if __name__ == '__main__':
     try:

@@ -1,4 +1,4 @@
-# Copyright 2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -13,7 +13,9 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library.  If not, see <http://www.gnu.org/licenses/>.
 
-import os, re, json
+import os
+import re
+import json
 from typing import List
 
 from vyos.base import Warning
@@ -116,3 +118,19 @@ def restart_login_consoles(prompt_user=False, quiet=True, devices: List[str]=[])
             cmd(f'systemctl stop {unit_name}')
 
     return True
+
+def is_tty(name: str, warning=False) -> bool:
+    """ Check if a given device file (e.g. /dev/ttyS0) is a TTY (teletypewriter)
+    device in Linux
+    """
+    import os
+    path_tty = f'/dev/{name}'
+    if os.path.exists(path_tty):
+        with open(path_tty, 'rb') as f:
+            fd = f.fileno()
+            # True if filename is a TTY
+            return os.isatty(fd)
+    elif warning:
+        from vyos.base import Warning
+        Warning(f'Device "{name}" does not exist!')
+    return False

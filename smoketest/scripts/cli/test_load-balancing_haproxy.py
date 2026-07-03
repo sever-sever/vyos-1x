@@ -1,0 +1,766 @@
+#!/usr/bin/env python3
+#
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 or later as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+import re
+import time
+import textwrap
+import unittest
+
+from base_vyostest_shim import VyOSUnitTestSHIM
+
+from vyos.configsession import ConfigSessionError
+from vyos.template import get_default_port
+from vyos.utils.process import call
+from vyos.utils.process import process_named_running
+from vyos.utils.file import read_file
+
+PROCESS_NAME = 'haproxy'
+HAPROXY_CONF = '/run/haproxy/haproxy.cfg'
+base_path = ['load-balancing', 'haproxy']
+proxy_interface = 'eth1'
+
+valid_ca_cert = """
+MIIDnTCCAoWgAwIBAgIUewSDtLiZbhg1YEslMnqRl1shoPcwDQYJKoZIhvcNAQEL
+BQAwVzELMAkGA1UEBhMCR0IxEzARBgNVBAgMClNvbWUtU3RhdGUxEjAQBgNVBAcM
+CVNvbWUtQ2l0eTENMAsGA1UECgwEVnlPUzEQMA4GA1UEAwwHdnlvcy5pbzAeFw0y
+NDA0MDEwNTQ3MzJaFw0yOTAzMzEwNTQ3MzJaMFcxCzAJBgNVBAYTAkdCMRMwEQYD
+VQQIDApTb21lLVN0YXRlMRIwEAYDVQQHDAlTb21lLUNpdHkxDTALBgNVBAoMBFZ5
+T1MxEDAOBgNVBAMMB3Z5b3MuaW8wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
+AoIBAQC/D6W27rfpdPIf16JHs8fx/7VehyCk8m03dPAQqv6wQiHF5xhXaFZER1+c
+nf7oExp9zi/4HJ/KRbcc1loVArXtV0zwAUftBmUeezGVfxhCHKhP89GnV4NB97jj
+klHFSxjEoT/0YvJQ1IV/3Cos1T5O8x14WIi31l7WQGYAyWxUXiP8QxGVmF3odEJo
+O3e7Ew9HFkamvuL6Z6c4uAVMM7uYXme7q0OM49Wu7C9hj39ZKbjG5FFKZTj+zDKg
+SbOiQaFk3blOky/e3ifNjZelGtussYPOMBkUirLvrSGGy7s3lm8Yp5PH5+UkVQB2
+rZyxRdZTC9kh+dShR1s/qcPnDw7lAgMBAAGjYTBfMA8GA1UdEwEB/wQFMAMBAf8w
+DgYDVR0PAQH/BAQDAgGGMB0GA1UdJQQWMBQGCCsGAQUFBwMCBggrBgEFBQcDATAd
+BgNVHQ4EFgQU/HE2UPn8JQB/9EL52GquPxZqr5MwDQYJKoZIhvcNAQELBQADggEB
+AIkMmqyoMqidTa3lvUPJNl4H+Ef/yPQkTkrsOd3WL8DQysyUdMLdQozr3K1bH5XB
+wRxoXX211nu4WhN18LsFJRCuHBSxmaNkBGFyl+JNvhPUSI6j0somNMCS75KJ0ZDx
+2HZsXmmJFF902VQxCR7vCIrFDrKDYq1e7GQbFS8t46FlpqivQMQWNPt18Bthj/1Y
+lO2GKRWFCX8VlOW7FtDQ6B3oC1oAGHBBGogAx7/0gh9DnYBKT14V/kuWW3RNABZJ
+ewHO1C6icQdnjtaREDyTP4oyL+uyAfXrFfbpti2hc00f8oYPQZYxj1yxl4UAdNij
+mS6YqH/WRioGMe3tBVeSdoo=
+"""
+
+valid_ca_private_key = """
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC/D6W27rfpdPIf
+16JHs8fx/7VehyCk8m03dPAQqv6wQiHF5xhXaFZER1+cnf7oExp9zi/4HJ/KRbcc
+1loVArXtV0zwAUftBmUeezGVfxhCHKhP89GnV4NB97jjklHFSxjEoT/0YvJQ1IV/
+3Cos1T5O8x14WIi31l7WQGYAyWxUXiP8QxGVmF3odEJoO3e7Ew9HFkamvuL6Z6c4
+uAVMM7uYXme7q0OM49Wu7C9hj39ZKbjG5FFKZTj+zDKgSbOiQaFk3blOky/e3ifN
+jZelGtussYPOMBkUirLvrSGGy7s3lm8Yp5PH5+UkVQB2rZyxRdZTC9kh+dShR1s/
+qcPnDw7lAgMBAAECggEAGm+j0kf9koPn7Jf9kEZD6CwlgEraLXiNvBqmDOhcDS9Z
+VPTA3XdGWHQ3uofx+VKLW9TntkDfqzEyQP83v6h8W7a0opDKzvUPkMQi/Dh1ttAY
+SdfGrozhUINiRbq9LbtSVgKpwrreJGkDf8mK3GE1Gd9xuHEnmahDvwlyE7HLF3Eh
+2xJDSAPx3OxcjR5hW7vbojhVCyCfuYTlZB86f0Sb8SqxZMt/y2zKmbzoTqpUBWbg
+lBnE7GJoNR07DWjxvEP8r6kQMh670I01SUR42CSK8X8asHhhZHUcggsNno+BBc6K
+sy4HzDIYIay6oy0atcVzKsGrlNCveeAiSEcw7x2yAQKBgQDsXz2FbhXYV5Vbt4wU
+5EWOa7if/+FG+TcVezOF3xlNBgykjXHQaYTYHrJq0qsEFrNT3ZGm9ezY4LdF3BTt
+5z/+i8QlCCw/nr3N7JZx6U5+OJl1j3NLFoFx3+DXo31pgJJEQCHHwdCkF5IuOcZ/
+b3nXkRZ80BVv7XD6F9bMHEwLYQKBgQDO7THcRDbsE6/+7VsTDf0P/JENba3DBBu1
+gjb1ItL5FHJwMgnkUadRZRo0QKye848ugribed39qSoJfNaBJrAT5T8S/9q+lXft
+vXUckcBO1CKNaP9gqF5fPIdNHf64GbmCiiHjOTE3rwJjkxJPpzLXyvgBO4aLeesK
+ThBdW+iWBQKBgD3crz08knsMcQqP/xl4pLuhdbBqR4tLrh7xH4rp2LVP3/8xBZiG
+BT6Kyicq+5cWWdiZJIWN127rYQvnjZK18wmriqomeW4tHX/Ha5hkdyaRqZga8xGz
+0iz7at0E7M2v2JgEMNMW5oQLpzZx6IFxq3G/hyMjUnj4q5jIpG7G+SABAoGBAKgT
+8Ika+4WcpDssrup2VVTT8Tp4GUkroBo6D8vkInvhiObrLi+/x2mM9tD0q4JdEbNU
+yQC454EwFA4q0c2MED/I2QfkvNhLbmO0nVi8ZvlgxEQawjzP5f/zmW8haxI9Cvsm
+mkoH3Zt+UzFwd9ItXFX97p6JrErEmA8Bw7chfXXFAoGACWR/c+s7hnX6gzyah3N1
+Db0xAaS6M9fzogcg2OM1i/6OCOcp4Sh1fmPG7tN45CCnFkhgVoRkSSA5MJAe2I/r
+xFm72VX7567T+4qIFua2iDxIBA/Z4zmj+RYfhHGPYZjdSjprKJxY6QOv5aoluBvE
+mlLy1Hmcry+ukWZtWezZfGY=
+"""
+
+valid_cert = """
+MIIDsTCCApmgAwIBAgIUDKOfYIwwtjww0vAMvJnXnGLhL+0wDQYJKoZIhvcNAQEL
+BQAwVzELMAkGA1UEBhMCR0IxEzARBgNVBAgMClNvbWUtU3RhdGUxEjAQBgNVBAcM
+CVNvbWUtQ2l0eTENMAsGA1UECgwEVnlPUzEQMA4GA1UEAwwHdnlvcy5pbzAeFw0y
+NDA0MDEwNTQ5NTdaFw0yNTA0MDEwNTQ5NTdaMFcxCzAJBgNVBAYTAkdCMRMwEQYD
+VQQIDApTb21lLVN0YXRlMRIwEAYDVQQHDAlTb21lLUNpdHkxDTALBgNVBAoMBFZ5
+T1MxEDAOBgNVBAMMB3Z5b3MuaW8wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
+AoIBAQCHtW25Umt6rqm2gfzqAZg1/VsqefZwAqIUAm2T3VwHQZ/2tNdr8ROWASii
+W5PToC7N8StMwFl2YoIof+MXGMO00toTTJePZOJKjF9U9hL3kuYuY1+yng4fl+E0
+96xVobb2KY4lMZ2rVwmpB7jkNO2LWxbJ6vHKcwMOhlx/8NEKIoVmkBT1Zkgy5dgn
+PgTtJcdVIU75XhQWqBmAUsMmACuZfqSYJbAv3hHz5V+Ejt0dI6mlGM7TXsCC9tKM
+64paIKZooFm78IsxJ26jHpZ8eh+SDBz0VBydBFWXm8VhOJ8NlZ1opAh3AWxFZDGt
+49uOsy82VmUcHPyoZ8DKYkBFHfSpAgMBAAGjdTBzMAwGA1UdEwEB/wQCMAAwDgYD
+VR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMB0GA1UdDgQWBBTeTcgM
+pRxAMjVBirjzo2QUu5H5fzAfBgNVHSMEGDAWgBT8cTZQ+fwlAH/0QvnYaq4/Fmqv
+kzANBgkqhkiG9w0BAQsFAAOCAQEAi4dBcH7TIYwWRW6bWRubMA7ztonV4EYb15Zf
+9yNafMWAEEBOii/DFo+j/ky9oInl7ZHw7gTIyXfLEarX/bM6fHOgiyj4zp3u6RnH
+5qlBypu/YCnyPjE/GvV05m2rrXnxZ4rCtcoO4u/HyGbV+jGnCmjShKICKyu1FdMd
+eeZRrLKPO/yghadGH34WVQnrbaorwlbi+NjB6fxmZQx5HE/SyK/9sb6WCpLMGHoy
+MpdQo3lV1ewtL3ElIWDq6mO030Mo5pwpjIU+8yHHNBVzg6mlGVgQPAp0gbUei9aP
+CJ8SLmMEi3NDk0E/sPgVC17e6bf2bx2nRuXROZekG2dd90Iu8g==
+"""
+
+valid_cert_private_key = """
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCHtW25Umt6rqm2
+gfzqAZg1/VsqefZwAqIUAm2T3VwHQZ/2tNdr8ROWASiiW5PToC7N8StMwFl2YoIo
+f+MXGMO00toTTJePZOJKjF9U9hL3kuYuY1+yng4fl+E096xVobb2KY4lMZ2rVwmp
+B7jkNO2LWxbJ6vHKcwMOhlx/8NEKIoVmkBT1Zkgy5dgnPgTtJcdVIU75XhQWqBmA
+UsMmACuZfqSYJbAv3hHz5V+Ejt0dI6mlGM7TXsCC9tKM64paIKZooFm78IsxJ26j
+HpZ8eh+SDBz0VBydBFWXm8VhOJ8NlZ1opAh3AWxFZDGt49uOsy82VmUcHPyoZ8DK
+YkBFHfSpAgMBAAECggEABofhw0W/ACEMcAjmpNTFkFCUXPGQXWDVD7EzuIZSNdOv
+yOm4Rbys6H6/B7wwO6KVagoBf1Cw5Xh1YtFPuoZxsZ+liMD6eLc+SB/j/RTYAhPO
+0bvsyK3gSF8w4nGKWLce9M74ZRwThkG6qGijmlDdPyP3r2kn8GoTQzVOWYZbavk/
+H3uE6PsZSWjOY+Mnm3vEmeItPYKGZ5+IP+YiTqZ4NCggBwH7csnR3/kbwY5Ns7jl
+3Av+EAdIeUwDNeMfLTzN7GphJR7gL6YQIhGKxE+W0GHXL2FubnnrFx8G75HFh1ay
+GkJXEqY5Lbd+7VPS0KcQdwhMSSoJsY5GUORUqrU80QKBgQC/0wJSu+Gfe7dONIby
+mnGRppSRIQVRjCjbVIN+Y2h1Kp3aK0qDpV7KFLCiUUtz9rWHR/NB4cDaIW543T55
+/jXUMD2j3EqtbtlsVQfDLQV7DyDrMmBAs4REHmyZmWTzHjCDUO79ahdOlZs34Alz
+wfpX3L3WVYGIAJKZtsUZ8FbrGQKBgQC1HFgVZ1PqP9/pW50RMh06BbQrhWPGiWgH
+Rn5bFthLkp3uqr9bReBq9tu3sqJuAhFudH68wup+Z+fTcHAcNg2Rs+Q+IKnULdB/
+UQHYoPjeWOvHAuOmgn9iD9OD7GCIv8fZmLit09vAsOWq+NKNBKCknGM70CDrvAlQ
+lOAUa34YEQKBgQC5i8GThWiYe3Kzktt1jy6LVDYgq3AZkRl0Diui9UT1EGPfxEAv
+VqZ5kcnJOBlj8h9k25PRBi0k0XGqN1dXaS1oMcFt3ofdenuU7iqz/7htcBTHa9Lu
+wrYNreAeMuISyADlBEQnm5cvzEZ3pZ1++wLMOhjmWY8Rnnwvczrz/CYXAQKBgH+t
+vcNJFvWblkUzWuWWiNgw0TWlUhPTJs2KOuYIku+kK0bohQLZnj6KTZeRjcU0HAnc
+gsScPShkJCEBsWeSC7reMVhDOrbknYpEF6MayJgn5ABm3wqyEQ+WzKzCZcPCQCf8
+7KVPKCsOCrufsv/LdVzXC3ZNYggOhhqS+e4rYbehAoGBAIsq252o3vgrunzS5FZx
+IONA2FvYrxVbDn5aF8WfNSdKFy3CAlt0P+Fm8gYbrKylIfMXpL8Oqc9RJou5onZP
+ZXLrtgVJR9W020qTurO2f91qfU8646n11hR9ObBB1IYbagOU0Pw1Nrq/FRp/u2tx
+7i7xFz2WEiQeSCPaKYOiqM3t
+"""
+
+haproxy_service_name = 'https_front'
+haproxy_backend_name = 'bk-01'
+
+def parse_haproxy_config() -> dict:
+    config_str = read_file(HAPROXY_CONF)
+    section_pattern = re.compile(r'^(global|defaults|frontend\s+\S+|backend\s+\S+)', re.MULTILINE)
+    sections = {}
+
+    matches = list(section_pattern.finditer(config_str))
+
+    for i, match in enumerate(matches):
+        section_name = match.group(1).strip()
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(config_str)
+        section_body = config_str[start:end]
+        dedented_body = textwrap.dedent(section_body).strip()
+        sections[section_name] = dedented_body
+
+    return sections
+class TestLoadBalancingReverseProxy(VyOSUnitTestSHIM.TestCase):
+    def tearDown(self):
+        # Check for running process
+        self.assertTrue(process_named_running(PROCESS_NAME))
+
+        self.cli_delete(['interfaces', 'ethernet', proxy_interface, 'address'])
+        self.cli_delete(base_path)
+        self.cli_delete(['pki'])
+        self.cli_commit()
+
+        # Process must be terminated after deleting the config
+        self.assertFalse(process_named_running(PROCESS_NAME))
+
+        # always forward to base class
+        super().tearDown()
+
+    def base_config(self):
+        self.cli_set(base_path + ['service', haproxy_service_name, 'mode', 'http'])
+        self.cli_set(base_path + ['service', haproxy_service_name, 'port', '4433'])
+        self.cli_set(base_path + ['service', haproxy_service_name, 'backend', haproxy_backend_name])
+
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'mode', 'http'])
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'server', haproxy_backend_name, 'address', '192.0.2.11'])
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'server', haproxy_backend_name, 'port', '9090'])
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'server', haproxy_backend_name, 'send-proxy'])
+
+        self.cli_set(base_path + ['global-parameters', 'max-connections', '1000'])
+
+    def configure_pki(self):
+
+        # Valid CA
+        self.cli_set(['pki', 'ca', 'smoketest', 'certificate', valid_ca_cert.replace('\n','')])
+        self.cli_set(['pki', 'ca', 'smoketest', 'private', 'key', valid_ca_private_key.replace('\n','')])
+
+        # Valid cert
+        self.cli_set(['pki', 'certificate', 'smoketest', 'certificate', valid_cert.replace('\n','')])
+        self.cli_set(['pki', 'certificate', 'smoketest', 'private', 'key', valid_cert_private_key.replace('\n','')])
+
+    def test_reverse_proxy_domain(self):
+        domains_bk_first = ['n1.example.com', 'n2.example.com', 'n3.example.com']
+        domain_bk_second = 'n5.example.com'
+        frontend = 'vyos_smoketest'
+        front_port = '4433'
+        bk_server_first = '192.0.2.11'
+        bk_server_second = '192.0.2.12'
+        bk_first_name = 'vyosbk-01'
+        bk_second_name = 'vyosbk-02'
+        bk_server_port = '9090'
+        mode = 'http'
+        rule_ten = '10'
+        rule_twenty = '20'
+        rule_thirty = '30'
+        rule_forty = '40'
+        send_proxy = 'send-proxy'
+        max_connections = '1000'
+
+        back_base = base_path + ['backend']
+
+        self.cli_set(base_path + ['service', frontend, 'mode', mode])
+        self.cli_set(base_path + ['service', frontend, 'port', front_port])
+        for domain in domains_bk_first:
+            self.cli_set(base_path + ['service', frontend, 'rule', rule_ten, 'domain-name', domain])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_ten, 'set', 'backend', bk_first_name])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_twenty, 'domain-name', domain_bk_second])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_twenty, 'set', 'backend', bk_second_name])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_thirty, 'url-path', 'end', '/test'])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_thirty, 'set', 'backend', bk_second_name])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_forty, 'domain-name', domain_bk_second])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_forty, 'set', 'backend', bk_second_name])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_forty, 'wildcard-domain'])
+
+        self.cli_set(back_base + [bk_first_name, 'mode', mode])
+        self.cli_set(back_base + [bk_first_name, 'server', bk_first_name, 'address', bk_server_first])
+        self.cli_set(back_base + [bk_first_name, 'server', bk_first_name, 'port', bk_server_port])
+        self.cli_set(back_base + [bk_first_name, 'server', bk_first_name, send_proxy])
+
+        self.cli_set(back_base + [bk_second_name, 'mode', mode])
+        self.cli_set(back_base + [bk_second_name, 'server', bk_second_name, 'address', bk_server_second])
+        self.cli_set(back_base + [bk_second_name, 'server', bk_second_name, 'port', bk_server_port])
+        self.cli_set(back_base + [bk_second_name, 'server', bk_second_name, 'backup'])
+
+        self.cli_set(base_path + ['global-parameters', 'max-connections', max_connections])
+
+        # commit changes
+        self.cli_commit()
+
+        config = read_file(HAPROXY_CONF)
+
+        # Global
+        self.assertIn(f'maxconn {max_connections}', config)
+
+        # Frontend
+        self.assertIn(f'frontend {frontend}', config)
+        self.assertIn(f'bind [::]:{front_port} v4v6', config)
+        self.assertIn(f'mode {mode}', config)
+        for domain in domains_bk_first:
+            self.assertIn(f'acl {rule_ten} hdr(host) -i {domain}', config)
+        self.assertIn(f'use_backend {bk_first_name} if {rule_ten}', config)
+        self.assertIn(f'acl {rule_twenty} hdr(host) -i {domain_bk_second}', config)
+        self.assertIn(f'use_backend {bk_second_name} if {rule_twenty}', config)
+        self.assertIn(f'acl {rule_thirty} path -i -m end /test', config)
+        self.assertIn(f'use_backend {bk_second_name} if {rule_thirty}', config)
+        self.assertIn(f'acl {rule_forty} hdr(host) -i -m end .{domain_bk_second}', config)
+        self.assertIn(f'use_backend {bk_second_name} if {rule_forty}', config)
+
+        # Backend
+        self.assertIn(f'backend {bk_first_name}', config)
+        self.assertIn(f'balance roundrobin', config)
+        self.assertIn(f'option forwardfor', config)
+        self.assertIn('http-request add-header X-Forwarded-Proto https if { ssl_fc }', config)
+        self.assertIn(f'mode {mode}', config)
+        self.assertIn(f'server {bk_first_name} {bk_server_first}:{bk_server_port} send-proxy', config)
+
+        self.assertIn(f'backend {bk_second_name}', config)
+        self.assertIn(f'mode {mode}', config)
+        self.assertIn(f'server {bk_second_name} {bk_server_second}:{bk_server_port}', config)
+        self.assertIn(f'server {bk_second_name} {bk_server_second}:{bk_server_port} backup', config)
+
+    def test_reverse_proxy_cert_not_exists(self):
+        self.base_config()
+        self.cli_set(base_path + ['service', haproxy_service_name, 'ssl', 'certificate', 'cert'])
+
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+        # self.assertIn('\nCertificates does not exist in PKI\n', str(e.exception))
+
+        self.cli_delete(base_path)
+        self.configure_pki()
+
+        self.base_config()
+        self.cli_set(base_path + ['service', haproxy_service_name, 'ssl', 'certificate', 'cert'])
+
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+        # self.assertIn('\nCertificate "cert" does not exist\n', str(e.exception))
+
+        self.cli_delete(base_path + ['service', haproxy_service_name, 'ssl', 'certificate', 'cert'])
+        self.cli_set(base_path + ['service', haproxy_service_name, 'ssl', 'certificate', 'smoketest'])
+        self.cli_commit()
+
+    def test_reverse_proxy_ca_not_exists(self):
+        self.base_config()
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'ssl', 'ca-certificate', 'ca-test'])
+
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+        # self.assertIn('\nCA certificates does not exist in PKI\n', str(e.exception))
+
+        self.cli_delete(base_path)
+        self.configure_pki()
+
+        self.base_config()
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'ssl', 'ca-certificate', 'ca-test'])
+
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+        # self.assertIn('\nCA certificate "ca-test" does not exist\n', str(e.exception))
+
+        self.cli_delete(base_path + ['backend', haproxy_backend_name, 'ssl', 'ca-certificate', 'ca-test'])
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'ssl', 'ca-certificate', 'smoketest'])
+        self.cli_commit()
+
+    def test_reverse_proxy_backend_ssl_no_verify(self):
+        # Setup base
+        self.configure_pki()
+        self.base_config()
+
+        # Set no-verify option
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'ssl', 'no-verify'])
+        self.cli_commit()
+
+        # Test no-verify option
+        config = read_file(HAPROXY_CONF)
+        self.assertIn(f'server {haproxy_backend_name} 192.0.2.11:9090 send-proxy ssl verify none', config)
+
+        # Test setting ca-certificate alongside no-verify option fails, to test config validation
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'ssl', 'ca-certificate', 'smoketest'])
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+
+    def test_reverse_proxy_backend_websocket(self):
+        t_tunnel = '3600'
+        opt_server_close = 'http-server-close'
+
+        # Setup base
+        self.configure_pki()
+        self.base_config()
+
+        # Set minimal backend websocket configuration
+        self.cli_set(base_path + ['backend', haproxy_backend_name, opt_server_close])
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'timeout', 'tunnel', t_tunnel])
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'ssl', 'no-verify'])
+
+        self.cli_commit()
+
+        # Ensure 'http-server-close' is not used in tcp mode, to test config validation
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'mode', 'tcp'])
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+
+        config = read_file(HAPROXY_CONF)
+        self.assertIn(f'option {opt_server_close}', config)
+        self.assertIn(f'timeout tunnel {t_tunnel}s', config)
+        self.assertIn('option forwardfor', config)
+        self.assertIn(' http-request set-header X-Forwarded-Port %[dst_port]', config)
+        self.assertIn('http-request add-header X-Forwarded-Proto https if { ssl_fc }', config)
+        self.assertIn(f'server {haproxy_backend_name} 192.0.2.11:9090 send-proxy ssl verify none', config)
+
+    def test_reverse_proxy_backend_http_check(self):
+        # Setup base
+        self.base_config()
+
+        # Set http-check
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'http-check', 'method', 'get'])
+        self.cli_commit()
+
+        # Test http-check
+        config = read_file(HAPROXY_CONF)
+        self.assertIn('option httpchk', config)
+        self.assertIn('http-check send meth GET', config)
+
+        # Set http-check with uri and status
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'http-check', 'uri', '/health'])
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'http-check', 'expect', 'status', '200'])
+        self.cli_commit()
+
+        # Test http-check with uri and status
+        config = read_file(HAPROXY_CONF)
+        self.assertIn('option httpchk', config)
+        self.assertIn('http-check send meth GET uri /health', config)
+        self.assertIn('http-check expect status 200', config)
+
+        # Set http-check with string
+        self.cli_delete(base_path + ['backend', haproxy_backend_name, 'http-check', 'expect', 'status', '200'])
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'http-check', 'expect', 'string', 'success'])
+        self.cli_commit()
+
+        # Test http-check with string
+        config = read_file(HAPROXY_CONF)
+        self.assertIn('option httpchk', config)
+        self.assertIn('http-check send meth GET uri /health', config)
+        self.assertIn('http-check expect string success', config)
+
+        # Test configuring both http-check & health-check fails validation script
+        self.cli_set(base_path + ['backend', haproxy_backend_name, 'health-check', 'ldap'])
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+
+    def test_reverse_proxy_tcp_mode(self):
+        frontend = 'tcp_8443'
+        mode = 'tcp'
+        front_port = '8433'
+        tcp_request_delay = "5000"
+        rule_thirty = '30'
+        domain_bk = 'n6.example.com'
+        ssl_opt = "req-ssl-sni"
+        bk_name = 'bk-03'
+        bk_server = '192.0.2.11'
+        bk_server_port = '9090'
+
+        back_base = base_path + ['backend']
+
+        self.cli_set(base_path + ['service', frontend, 'mode', mode])
+        self.cli_set(base_path + ['service', frontend, 'port', front_port])
+        self.cli_set(base_path + ['service', frontend, 'tcp-request', 'inspect-delay', tcp_request_delay])
+
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_thirty, 'domain-name', domain_bk])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_thirty, 'ssl', ssl_opt])
+        self.cli_set(base_path + ['service', frontend, 'rule', rule_thirty, 'set', 'backend', bk_name])
+
+        self.cli_set(back_base + [bk_name, 'mode', mode])
+        self.cli_set(back_base + [bk_name, 'server', bk_name, 'address', bk_server])
+        self.cli_set(back_base + [bk_name, 'server', bk_name, 'port', bk_server_port])
+
+        # commit changes
+        self.cli_commit()
+
+        config = read_file(HAPROXY_CONF)
+
+        # Frontend
+        self.assertIn(f'frontend {frontend}', config)
+        self.assertIn(f'bind [::]:{front_port} v4v6', config)
+        self.assertIn(f'mode {mode}', config)
+
+        self.assertIn(f'tcp-request inspect-delay {tcp_request_delay}', config)
+        self.assertIn(f"tcp-request content accept if {{ req_ssl_hello_type 1 }}", config)
+        self.assertIn(f'acl {rule_thirty} req_ssl_sni -i {domain_bk}', config)
+        self.assertIn(f'use_backend {bk_name} if {rule_thirty}', config)
+
+        # Backend
+        self.assertIn(f'backend {bk_name}', config)
+        self.assertIn(f'balance roundrobin', config)
+        self.assertIn(f'mode {mode}', config)
+        self.assertIn(f'server {bk_name} {bk_server}:{bk_server_port}', config)
+
+    def test_reverse_proxy_http_response_headers(self):
+        # Setup base
+        self.configure_pki()
+        self.base_config()
+
+        # Set example headers in both frontend and backend
+        self.cli_set(base_path + ['service', haproxy_service_name, 'http-response-headers', 'Cache-Control', 'value', 'max-age=604800'])
+        self.cli_set(base_path + ['backend', haproxy_backend_name,  'http-response-headers', 'Proxy-Backend-ID', 'value', haproxy_backend_name])
+        self.cli_commit()
+
+        # Test headers are present in generated configuration file
+        config = read_file(HAPROXY_CONF)
+        self.assertIn('http-response set-header Cache-Control \'max-age=604800\'', config)
+        self.assertIn(f'http-response set-header Proxy-Backend-ID \'{haproxy_backend_name}\'', config)
+
+        # Test setting alongside modes other than http is blocked by validation conditions
+        self.cli_set(base_path + ['service', haproxy_service_name, 'mode', 'tcp'])
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+
+    def test_reverse_proxy_tcp_health_checks(self):
+        # Setup PKI
+        self.configure_pki()
+
+        # Define variables
+        frontend = 'fe_ldaps'
+        mode = 'tcp'
+        health_check = 'ldap'
+        front_port = '636'
+        bk_name = 'bk_ldap'
+        bk_servers = ['192.0.2.11', '192.0.2.12']
+        bk_server_port = '389'
+
+        # Configure frontend
+        self.cli_set(base_path + ['service', frontend, 'mode', mode])
+        self.cli_set(base_path + ['service', frontend, 'port', front_port])
+        self.cli_set(base_path + ['service', frontend, 'ssl', 'certificate', 'smoketest'])
+
+        # Configure backend
+        self.cli_set(base_path + ['backend', bk_name, 'mode', mode])
+        self.cli_set(base_path + ['backend', bk_name, 'health-check', health_check])
+        for index, bk_server in enumerate(bk_servers):
+            self.cli_set(base_path + ['backend', bk_name, 'server', f'srv-{index}', 'address', bk_server])
+            self.cli_set(base_path + ['backend', bk_name, 'server', f'srv-{index}', 'port', bk_server_port])
+
+        # Commit & read config
+        self.cli_commit()
+        config = read_file(HAPROXY_CONF)
+
+        # Validate Frontend
+        self.assertIn(f'frontend {frontend}', config)
+        self.assertIn(f'bind [::]:{front_port} v4v6 ssl crt /run/haproxy/smoketest.pem', config)
+        self.assertIn(f'mode {mode}', config)
+        self.assertIn(f'backend {bk_name}', config)
+
+        # Validate Backend
+        self.assertIn(f'backend {bk_name}', config)
+        self.assertIn(f'option {health_check}-check', config)
+        self.assertIn(f'mode {mode}', config)
+        for index, bk_server in enumerate(bk_servers):
+            self.assertIn(f'server srv-{index} {bk_server}:{bk_server_port}', config)
+
+        # Validate SMTP option renders correctly
+        self.cli_set(base_path + ['backend', bk_name, 'health-check', 'smtp'])
+        self.cli_commit()
+        config = read_file(HAPROXY_CONF)
+        self.assertIn(f'option smtpchk', config)
+
+    def test_reverse_proxy_tcp_health_checks_custom_port(self):
+        # Define variables
+        service = 'my-tcp-api'
+        mode = 'tcp'
+        front_port = '9000'
+        backend = 'bk-01'
+        balance = 'round-robin'
+        servers = [
+            ('srv01', '192.0.2.11', '9001', '9011'),
+            ('srv02', '192.0.2.12', '9002', None),
+            ('srv03', '192.0.2.13', '9003', '9013'),
+        ]
+
+        # Configure frontend
+        self.cli_set(base_path + ['service', service, 'backend', backend])
+        self.cli_set(base_path + ['service', service, 'mode', mode])
+        self.cli_set(base_path + ['service', service, 'port', front_port])
+
+        # Configure backend
+        self.cli_set(base_path + ['backend', backend, 'balance', balance])
+        self.cli_set(base_path + ['backend', backend, 'mode', mode])
+
+        # Configure backend servers
+        for name, addr, port, check_port in servers:
+            base_server_path = base_path + ['backend', backend, 'server', name]
+            self.cli_set(base_server_path + ['address', addr])
+            self.cli_set(base_server_path + ['port', port])
+
+            if check_port:
+                self.cli_set(base_server_path + ['check', 'port', check_port])
+            else:
+                self.cli_set(base_server_path + ['check'])
+
+        # Commit and read config
+        self.cli_commit()
+        config = read_file(HAPROXY_CONF)
+        config_lines = [line.strip() for line in config.splitlines()]
+
+        # Validate Frontend
+        self.assertIn(f'frontend {service}', config)
+        self.assertIn(f'bind [::]:{front_port} v4v6', config)
+        self.assertIn(f'mode {mode}', config)
+        self.assertIn(f'default_backend {backend}', config)
+
+        # Validate Backend
+        self.assertIn(f'backend {backend}', config)
+        self.assertIn('balance roundrobin', config)
+        self.assertIn(f'mode {mode}', config)
+
+        # Validate backend servers
+        for name, addr, port, check_port in servers:
+            with self.subTest(name=name):
+                expected_line = f'server {name} {addr}:{port}'
+                if check_port:
+                    expected_line += f' check port {check_port}'
+                else:
+                    expected_line += f' check'
+
+                self.assertIn(expected_line, config_lines)
+
+    def test_reverse_proxy_logging(self):
+        # Setup base
+        self.base_config()
+        self.cli_commit()
+
+        # Ensure default logging configuration is present
+        config = read_file(HAPROXY_CONF)
+
+        # Test global-parameters logging options
+        self.cli_set(base_path + ['global-parameters', 'logging', 'facility', 'local1', 'level', 'err'])
+        self.cli_set(base_path + ['global-parameters', 'logging', 'facility', 'local2', 'level', 'warning'])
+        self.cli_commit()
+
+        # Test global logging parameters are generated in configuration file
+        config = read_file(HAPROXY_CONF)
+        self.assertIn('log /dev/log local1 err', config)
+        self.assertIn('log /dev/log local2 warning', config)
+
+        # Test backend logging options
+        backend_path = base_path + ['backend', haproxy_backend_name]
+        self.cli_set(backend_path + ['logging', 'facility', 'local3', 'level', 'debug'])
+        self.cli_set(backend_path + ['logging', 'facility', 'local4', 'level', 'info'])
+        self.cli_commit()
+
+        # Test backend logging parameters are generated in configuration file
+        config = read_file(HAPROXY_CONF)
+        self.assertIn('log /dev/log local3 debug', config)
+        self.assertIn('log /dev/log local4 info', config)
+
+        # Test service logging options
+        service_path = base_path + ['service', haproxy_service_name]
+        self.cli_set(service_path + ['logging', 'facility', 'local5', 'level', 'notice'])
+        self.cli_set(service_path + ['logging', 'facility', 'local6', 'level', 'crit'])
+        self.cli_commit()
+
+        # Test service logging parameters are generated in configuration file
+        config = read_file(HAPROXY_CONF)
+        self.assertIn('log /dev/log local5 notice', config)
+        self.assertIn('log /dev/log local6 crit', config)
+
+    def test_reverse_proxy_http_compression(self):
+        # Setup base
+        self.configure_pki()
+        self.base_config()
+
+        # Configure compression in frontend
+        http_comp_path = base_path + ['service', haproxy_service_name, 'http-compression']
+        self.cli_set(http_comp_path + ['algorithm', 'gzip'])
+        self.cli_set(http_comp_path + ['mime-type', 'text/html'])
+        self.cli_set(http_comp_path + ['mime-type', 'text/javascript'])
+        self.cli_set(http_comp_path + ['mime-type', 'text/plain'])
+        self.cli_commit()
+
+        # Test compression is present in generated configuration file
+        config = read_file(HAPROXY_CONF)
+        self.assertIn('filter compression', config)
+        self.assertIn('compression algo gzip', config)
+        self.assertIn('compression type text/html text/javascript text/plain', config)
+
+        # Test setting compression without specifying any mime-types fails verification
+        self.cli_delete(base_path + ['service', haproxy_service_name, 'http-compression', 'mime-type'])
+        with self.assertRaises(ConfigSessionError) as e:
+            self.cli_commit()
+
+    def test_reverse_proxy_timeout(self):
+        t_default_check = '5'
+        t_default_client = '50'
+        t_default_connect = '10'
+        t_default_server ='50'
+        t_default_tunnel ='300'
+        t_check = '4'
+        t_client = '300'
+        t_connect = '12'
+        t_server ='120'
+        t_tunnel ='600'
+        t_front_client = '600'
+
+        self.base_config()
+        self.cli_commit()
+        # Check default timeout options
+        config_entries = (
+            f'timeout check {t_default_check}s',
+            f'timeout connect {t_default_connect}s',
+            f'timeout client {t_default_client}s',
+            f'timeout server {t_default_server}s',
+            f'timeout tunnel {t_default_tunnel}s'
+        )
+        # Check default timeout options
+        config = read_file(HAPROXY_CONF)
+        for config_entry in config_entries:
+            self.assertIn(config_entry, config)
+
+        # Set custom timeout options
+        self.cli_set(base_path + ['timeout', 'check', t_check])
+        self.cli_set(base_path + ['timeout', 'client', t_client])
+        self.cli_set(base_path + ['timeout', 'connect', t_connect])
+        self.cli_set(base_path + ['timeout', 'server', t_server])
+        self.cli_set(base_path + ['timeout', 'tunnel', t_tunnel])
+        self.cli_set(base_path + ['service', haproxy_service_name, 'timeout', 'client', t_front_client])
+
+        self.cli_commit()
+
+        # Check custom timeout options
+        config_entries = (
+            f'timeout check {t_check}s',
+            f'timeout connect {t_connect}s',
+            f'timeout client {t_client}s',
+            f'timeout server {t_server}s',
+            f'timeout tunnel {t_tunnel}s',
+            f'timeout client {t_front_client}s',
+        )
+
+        # Check configured options
+        config = read_file(HAPROXY_CONF)
+        for config_entry in config_entries:
+            self.assertIn(config_entry, config)
+
+    def test_reverse_proxy_http_redirect(self):
+        self.base_config()
+        self.cli_set(base_path + ['service', haproxy_service_name, 'redirect-http-to-https'])
+
+        self.cli_commit()
+
+        config = parse_haproxy_config()
+        frontend_name = f'frontend {haproxy_service_name}-http'
+        self.assertIn(frontend_name, config.keys())
+        self.assertIn('mode http', config[frontend_name])
+        self.assertIn('bind [::]:80 v4v6', config[frontend_name])
+        self.assertIn('acl acme_acl path_beg /.well-known/acme-challenge/', config[frontend_name])
+        self.assertIn('use_backend buildin_acme_certbot if acme_acl', config[frontend_name])
+        self.assertIn('redirect scheme https code 301 if !acme_acl', config[frontend_name])
+
+        backend_name = 'backend buildin_acme_certbot'
+        self.assertIn(backend_name, config.keys())
+        port = get_default_port('certbot_haproxy')
+        self.assertIn(f'server localhost 127.0.0.1:{port}', config[backend_name])
+
+    def test_reverse_proxy_listen_address_no_port_conflict(self):
+        # HAProxy port conflict check must consider listen-address (T7928)
+
+        frontend = 'svc-1'
+        backend = 'bk-1'
+        shared_port = '993'
+        addr_listen = '::1'  # HAProxy listen-address
+        addr_busy = '127.0.0.1'  # IP address kept busy by nc (different from the first)
+
+        # Run the netcat command to bind to the specified address and port
+        call(f'sudo nc -lk -s {addr_busy} -p {shared_port} &')
+
+        # Give nc a moment to bind before we commit
+        time.sleep(0.5)
+
+        try:
+            backend_path = base_path + ['backend', backend]
+            self.cli_set(backend_path + ['mode', 'tcp'])
+            self.cli_set(backend_path + ['server', 'srv-m', 'address', '192.0.2.14'])
+            self.cli_set(backend_path + ['server', 'srv-m', 'port', shared_port])
+
+            # Configure HAProxy frontend with listen-address
+            service_path = base_path + ['service', frontend]
+            self.cli_set(service_path + ['mode', 'tcp'])
+            self.cli_set(service_path + ['port', shared_port])
+            self.cli_set(service_path + ['listen-address', addr_listen])
+            self.cli_set(service_path + ['backend', backend])
+
+            # Must commit without raising "TCP port N is used by another service"
+            self.cli_commit()
+
+            # Commit with raising "TCP port N is used by another service"
+            self.cli_set(service_path + ['listen-address', addr_busy])
+            with self.assertRaises(ConfigSessionError) as e:
+                self.cli_commit()
+        finally:
+            # Always clean up nc regardless of test outcome
+            call('sudo pkill nc')
+
+        self.assertTrue(process_named_running(PROCESS_NAME))
+        config = read_file(HAPROXY_CONF)
+
+        # The busy address must NOT appear as a HAProxy bind
+        self.assertNotIn(f'bind {addr_busy}:{shared_port}', config)
+        self.assertIn(f'bind [{addr_listen}]:{shared_port}', config)
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

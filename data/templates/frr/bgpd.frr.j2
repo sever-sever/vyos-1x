@@ -1,13 +1,26 @@
+!
+{% if parameters.input_queue_limit is vyos_defined %}
+ bgp input-queue-limit {{ parameters.input_queue_limit }}
+{% endif %}
+{% if parameters.output_queue_limit is vyos_defined %}
+ bgp output-queue-limit {{ parameters.output_queue_limit }}
+{% endif %}
 {### MACRO definition for recurring peer patter, this can be either fed by a ###}
 {### peer-group or an individual BGP neighbor ###}
 {% macro bgp_neighbor(neighbor, config, peer_group=false) %}
+{# BGP order of peer-group and remote-as placement must be honored #}
 {% if peer_group == true %}
  neighbor {{ neighbor }} peer-group
-{% elif config.peer_group is vyos_defined %}
- neighbor {{ neighbor }} peer-group {{ config.peer_group }}
-{% endif %}
-{% if config.remote_as is vyos_defined %}
+{%     if config.remote_as is vyos_defined %}
  neighbor {{ neighbor }} remote-as {{ config.remote_as }}
+{%     endif %}
+{% else %}
+{%     if config.remote_as is vyos_defined %}
+ neighbor {{ neighbor }} remote-as {{ config.remote_as }}
+{%     endif %}
+{%     if config.peer_group is vyos_defined %}
+ neighbor {{ neighbor }} peer-group {{ config.peer_group }}
+{%     endif %}
 {% endif %}
 {% if config.local_role is vyos_defined %}
 {%     for role, strict in config.local_role.items() %}
@@ -27,6 +40,9 @@
 {%     endif %}
 {%     if config.bfd.profile is vyos_defined %}
  neighbor {{ neighbor }} bfd profile {{ config.bfd.profile }}
+{%     endif %}
+{%     if config.bfd.strict is vyos_defined %}
+ neighbor {{ neighbor }} bfd strict {{ 'hold-time ' ~ config.bfd.strict.hold_time if config.bfd.strict.hold_time is vyos_defined else '' }}
 {%     endif %}
 {% endif %}
 {% if config.capability.dynamic is vyos_defined %}
@@ -92,6 +108,8 @@
 {% endif %}
 {% if config.enforce_first_as is vyos_defined %}
  neighbor {{ neighbor }} enforce-first-as
+{% else %}
+ no neighbor {{ neighbor }} enforce-first-as
 {% endif %}
 {% if config.strict_capability_match is vyos_defined %}
  neighbor {{ neighbor }} strict-capability-match
@@ -149,6 +167,8 @@
  address-family ipv6 flowspec
 {%         elif afi == 'l2vpn_evpn' %}
  address-family l2vpn evpn
+{%         elif afi == 'link_state' %}
+ address-family link-state
 {%         endif %}
 {%         if afi_config.addpath_tx_all is vyos_defined %}
   neighbor {{ neighbor }} addpath-tx-all-paths
@@ -245,11 +265,13 @@
   neighbor {{ neighbor }} activate
  exit-address-family
  !
+{# j2lint: disable=jinja-statements-delimeter #}
 {%     endfor %}
 {% endif %}
-{% endmacro %}
+{# j2lint: disable=jinja-statements-delimeter #}
+{%- endmacro -%}
 !
-router bgp {{ system_as }} {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
+router bgp {{ system_as }} {{ 'vrf ' ~ vrf if vrf is vyos_defined }} {{ 'as-notation ' ~ parameters.as_notation | replace('as', '') if parameters.as_notation is vyos_defined }}
 {% if parameters.ebgp_requires_policy is vyos_defined %}
  bgp ebgp-requires-policy
 {% else %}
@@ -302,7 +324,9 @@ router bgp {{ system_as }} {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%         if afi_config.redistribute is vyos_defined %}
 {%             for protocol, protocol_config in afi_config.redistribute.items() %}
 {%                 if protocol == 'table' %}
-  redistribute table {{ protocol_config.table }}
+{%                     for table, table_config in protocol_config.items() %}
+  redistribute table-direct {{ table }} {{ 'metric ' ~ table_config.metric if table_config.metric is vyos_defined }} {{ 'route-map ' ~ table_config.route_map if table_config.route_map is vyos_defined }}
+{%                     endfor %}
 {%                 else %}
 {%                     set redistribution_protocol = protocol %}
 {%                     if protocol == 'ospfv3' %}
@@ -346,6 +370,9 @@ router bgp {{ system_as }} {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%             for vrf in afi_config.import.vrf %}
   import vrf {{ vrf }}
 {%             endfor %}
+{%         endif %}
+{%         if afi_config.route_map.vrf.import is vyos_defined %}
+  import vrf route-map {{ afi_config.route_map.vrf.import }}
 {%         endif %}
 {%         if afi_config.label.vpn.export is vyos_defined %}
   label vpn export {{ afi_config.label.vpn.export }}
@@ -408,14 +435,23 @@ router bgp {{ system_as }} {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%         if afi_config.rd.vpn.export is vyos_defined %}
   rd vpn export {{ afi_config.rd.vpn.export }}
 {%         endif %}
+{# T8990: emit FRR's canonical "rt vpn" keyword (not the "route-target vpn" #}
+{# alias), and fold an identical import+export into "both" exactly as FRR #}
+{# does. FRR only folds on an identical, order-sensitive match, which is #}
+{# what the string compare below tests - so reordered or differing RT lists #}
+{# stay split on both sides too. This keeps the rendered config #}
+{# byte-identical to FRR's running config, so frr-reload produces no diff #}
+{# that would otherwise flap leaked routes on every commit. #}
 {%         if afi_config.route_target.vpn.both is vyos_defined %}
-  route-target vpn both {{ afi_config.route_target.vpn.both }}
+  rt vpn both {{ afi_config.route_target.vpn.both }}
+{%         elif afi_config.route_target.vpn.export is vyos_defined and afi_config.route_target.vpn.export == afi_config.route_target.vpn.import %}
+  rt vpn both {{ afi_config.route_target.vpn.export }}
 {%         else %}
 {%             if afi_config.route_target.vpn.export is vyos_defined %}
-  route-target vpn export {{ afi_config.route_target.vpn.export }}
+  rt vpn export {{ afi_config.route_target.vpn.export }}
 {%             endif %}
 {%             if afi_config.route_target.vpn.import is vyos_defined %}
-  route-target vpn import {{ afi_config.route_target.vpn.import }}
+  rt vpn import {{ afi_config.route_target.vpn.import }}
 {%             endif %}
 {%         endif %}
 {%         if afi_config.route_target.both is vyos_defined %}
@@ -495,15 +531,21 @@ router bgp {{ system_as }} {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%                 if bmp_config.monitor.ipv4_unicast.post_policy is vyos_defined %}
   bmp monitor ipv4 unicast post-policy
 {%                 endif %}
+{%                 if bmp_config.monitor.ipv4_unicast.local_rib is vyos_defined %}
+  bmp monitor ipv4 unicast loc-rib
+{%                 endif %}
 {%                 if bmp_config.monitor.ipv6_unicast.pre_policy is vyos_defined %}
   bmp monitor ipv6 unicast pre-policy
 {%                 endif %}
 {%                 if bmp_config.monitor.ipv6_unicast.post_policy is vyos_defined %}
   bmp monitor ipv6 unicast post-policy
 {%                 endif %}
+{%                 if bmp_config.monitor.ipv6_unicast.local_rib is vyos_defined %}
+  bmp monitor ipv6 unicast loc-rib
+{%                 endif %}
 {%             endif %}
 {%             if bmp_config.address is vyos_defined %}
-  bmp connect {{ bmp_config.address }} port {{ bmp_config.port }} min-retry {{ bmp_config.min_retry }} max-retry {{ bmp_config.max_retry }}
+  bmp connect {{ bmp_config.address }} port {{ bmp_config.port }} min-retry {{ bmp_config.min_retry }} max-retry {{ bmp_config.max_retry }} {{ 'source-interface ' ~ bmp_config.source_interface if bmp_config.source_interface is vyos_defined }}
 {%             endif %}
 {%         endfor %}
  exit
@@ -512,13 +554,15 @@ router bgp {{ system_as }} {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {% if peer_group is vyos_defined %}
 {%     for peer, config in peer_group.items() %}
 {{ bgp_neighbor(peer, config, true) }}
-{%     endfor %}
+{# j2lint: disable=jinja-statements-delimeter #}
+{%-    endfor %}
 {% endif %}
  !
 {% if neighbor is vyos_defined %}
 {%     for peer, config in neighbor.items() %}
 {{ bgp_neighbor(peer, config) }}
-{%     endfor %}
+{# j2lint: disable=jinja-statements-delimeter #}
+{%-    endfor %}
 {% endif %}
  !
 {% if listen.limit is vyos_defined %}
@@ -613,7 +657,7 @@ router bgp {{ system_as }} {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
  bgp network import-check
 {% endif %}
 {% if parameters.route_reflector_allow_outbound_policy is vyos_defined %}
-bgp route-reflector allow-outbound-policy
+ bgp route-reflector allow-outbound-policy
 {% endif %}
 {% if parameters.no_client_to_client_reflection is vyos_defined %}
  no bgp client-to-client reflection
@@ -621,11 +665,16 @@ bgp route-reflector allow-outbound-policy
 {% if parameters.no_fast_external_failover is vyos_defined %}
  no bgp fast-external-failover
 {% endif %}
+{% if parameters.no_ipv6_auto_ra is vyos_defined %}
+ no bgp ipv6-auto-ra
+{% endif %}
 {% if parameters.no_suppress_duplicates is vyos_defined %}
  no bgp suppress-duplicates
 {% endif %}
 {% if parameters.reject_as_sets is vyos_defined %}
  bgp reject-as-sets
+{% else %}
+ no bgp reject-as-sets
 {% endif %}
 {% if parameters.router_id is vyos_defined and parameters.router_id is not none %}
  bgp router-id {{ parameters.router_id }}
@@ -638,6 +687,9 @@ bgp route-reflector allow-outbound-policy
 {% endif %}
 {% if parameters.tcp_keepalive.idle is vyos_defined and parameters.tcp_keepalive.interval is vyos_defined and parameters.tcp_keepalive.probes is vyos_defined %}
  bgp tcp-keepalive {{ parameters.tcp_keepalive.idle }} {{ parameters.tcp_keepalive.interval }} {{ parameters.tcp_keepalive.probes }}
+{% endif %}
+{% if parameters.update_delay.max_delay is vyos_defined %}
+ update-delay {{ parameters.update_delay.max_delay }}{{ ' ' ~ parameters.update_delay.establish_wait if parameters.update_delay.establish_wait is vyos_defined }}
 {% endif %}
 {% if srv6.locator is vyos_defined %}
  segment-routing srv6

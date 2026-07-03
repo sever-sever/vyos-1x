@@ -1,4 +1,4 @@
-# Copyright 2019 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -162,7 +162,7 @@ class Operational(Control):
             stats[counter] = int(self.get_interface(counter))
         return stats
 
-    def formated_stats(self, indent=4):
+    def formatted_stats(self, indent=4):
         tabs = []
         stats = self.get_stats()
         for rtx in self._stats_dir:

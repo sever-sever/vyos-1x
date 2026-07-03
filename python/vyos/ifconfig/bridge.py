@@ -1,4 +1,4 @@
-# Copyright 2019-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -13,13 +13,15 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library.  If not, see <http://www.gnu.org/licenses/>.
 
+import json
+
 from vyos.ifconfig.interface import Interface
 from vyos.utils.assertion import assert_boolean
 from vyos.utils.assertion import assert_list
 from vyos.utils.assertion import assert_positive
 from vyos.utils.dict import dict_search
 from vyos.utils.network import interface_exists
-from vyos.configdict import get_vlan_ids
+from vyos.configdict import get_vlans_ids_and_range
 from vyos.configdict import list_diff
 
 @Interface.register
@@ -32,7 +34,6 @@ class BridgeIf(Interface):
 
     The Linux bridge code implements a subset of the ANSI/IEEE 802.1d standard.
     """
-    iftype = 'bridge'
     definition = {
         **Interface.definition,
         **{
@@ -98,6 +99,13 @@ class BridgeIf(Interface):
         },
     }}
 
+    _command_get = {**Interface._command_get, **{
+        'fdb_entries': {
+            'shellcmd': 'bridge -json -detail fdb show dev {ifname}',
+            'format': json.loads,
+        },
+    }}
+
     _command_set = {**Interface._command_set, **{
         'add_port': {
             'shellcmd': 'ip link set dev {value} master {ifname}',
@@ -105,7 +113,16 @@ class BridgeIf(Interface):
         'del_port': {
             'shellcmd': 'ip link set dev {value} nomaster',
         },
+        'add_local_fdb_entry': {
+            'shellcmd': 'bridge fdb add {value} dev {ifname} self local',
+        },
+        'del_local_fdb_entry': {
+            'shellcmd': 'bridge fdb del {value} dev {ifname} self local',
+        },
     }}
+
+    def _create(self):
+        super()._create('bridge')
 
     def get_vlan_filter(self):
         """
@@ -191,8 +208,7 @@ class BridgeIf(Interface):
 
         # VLAN of bridge parent interface is always 1
         # VLAN 1 is the default VLAN for all unlabeled packets
-        cmd = f'bridge vlan add dev {self.ifname} vid 1 pvid untagged self'
-        self._cmd(cmd)
+        self._cmdl(['bridge', 'vlan', 'add', 'dev', self.ifname, 'vid', '1', 'pvid', 'untagged', 'self'])
 
     def set_multicast_querier(self, enable):
         """
@@ -270,10 +286,36 @@ class BridgeIf(Interface):
 
         return self.set_interface('vlan_protocol', map[protocol])
 
+    def get_fdb_entries(self):
+        """
+        Get the bridge forwarding database (FDB) entries
+        """
+        return self.get_interface('fdb_entries')
+
+    def add_local_fdb_entry(self, mac_address: str):
+        """
+        Add a local FDB entry for the given MAC address on the bridge interface.
+
+        Example:
+        >>> from vyos.ifconfig import BridgeIf
+        >>> BridgeIf('br0').add_local_fdb_entry('cc:38:2e:bf:7b:0d')
+        """
+        self.set_interface('add_local_fdb_entry', mac_address.lower())
+
+    def del_local_fdb_entry(self, mac_address: str):
+        """
+        Remove a local FDB entry for the given MAC address on the bridge interface.
+
+        Example:
+        >>> from vyos.ifconfig import BridgeIf
+        >>> BridgeIf('br0').del_local_fdb_entry('cc:38:2e:bf:7b:0d')
+        """
+        self.set_interface('del_local_fdb_entry', mac_address.lower())
+
     def update(self, config):
-        """ General helper function which works on a dictionary retrived by
+        """ General helper function which works on a dictionary retrieved by
         get_config_dict(). It's main intention is to consolidate the scattered
-        interface setup code and provide a single point of entry when workin
+        interface setup code and provide a single point of entry when working
         on any interface. """
 
         # Set ageing time
@@ -327,17 +369,24 @@ class BridgeIf(Interface):
         if 'enable_vlan' in config:
             for vlan in config.get('vif_remove', {}):
                 # Remove old VLANs from the bridge
-                cmd = f'bridge vlan del dev {self.ifname} vid {vlan} self'
-                self._cmd(cmd)
+                self._cmdl(['bridge', 'vlan', 'del', 'dev', self.ifname, 'vid', str(vlan), 'self'])
+
+                # After deleting vif, the FDB entry for that VLAN can linger.
+                # We should remove it manually:
+                fdb_entries = self.get_fdb_entries()
+                for entry in fdb_entries:
+                    mac = entry.get('mac')
+                    entry_vlan = entry.get('vlan')
+                    if entry_vlan and mac and str(entry_vlan) == vlan:
+                        cmd = f'bridge fdb del {mac} dev {self.ifname} vlan {vlan}'
+                        self._cmd(cmd)
 
             for vlan in config.get('vif', {}):
-                cmd = f'bridge vlan add dev {self.ifname} vid {vlan} self'
-                self._cmd(cmd)
+                self._cmdl(['bridge', 'vlan', 'add', 'dev', self.ifname, 'vid', str(vlan), 'self'])
 
             # VLAN of bridge parent interface is always 1. VLAN 1 is the default
             # VLAN for all unlabeled packets
-            cmd = f'bridge vlan add dev {self.ifname} vid 1 pvid untagged self'
-            self._cmd(cmd)
+            self._cmdl(['bridge', 'vlan', 'add', 'dev', self.ifname, 'vid', '1', 'pvid', 'untagged', 'self'])
 
         tmp = dict_search('member.interface', config)
         if tmp:
@@ -359,7 +408,7 @@ class BridgeIf(Interface):
                 self.add_port(interface)
 
                 if not interface.startswith('wlan'):
-                    # always set private-vlan/port isolation - this can not be
+                    # always set private-vlan/port isolation - this cannot be
                     # done when lower link is a wifi link, as it will trigger:
                     # RTNETLINK answers: Operation not supported
                     tmp = dict_search('isolated', interface_config)
@@ -374,11 +423,26 @@ class BridgeIf(Interface):
                 if 'priority' in interface_config:
                     lower.set_path_priority(interface_config['priority'])
 
+                # set BPDU guard
+                tmp = dict_search('bpdu_guard', interface_config)
+                value = '1' if (tmp != None) else '0'
+                lower.set_bpdu_guard(value)
+
+                # set root guard
+                tmp = dict_search('root_guard', interface_config)
+                value = '1' if (tmp != None) else '0'
+                lower.set_root_guard(value)
+
+                # set learning
+                disable_learning = dict_search('disable_learning', interface_config)
+                value = '1' if disable_learning is None else '0'
+                lower.set_learning(value)
+
                 if 'enable_vlan' in config:
                     add_vlan = []
                     native_vlan_id = None
                     allowed_vlan_ids= []
-                    cur_vlan_ids = get_vlan_ids(interface)
+                    cur_vlan_ids = get_vlans_ids_and_range(interface)
 
                     if 'native_vlan' in interface_config:
                         vlan_id = interface_config['native_vlan']
@@ -387,27 +451,18 @@ class BridgeIf(Interface):
 
                     if 'allowed_vlan' in interface_config:
                         for vlan in interface_config['allowed_vlan']:
-                            vlan_range = vlan.split('-')
-                            if len(vlan_range) == 2:
-                                for vlan_add in range(int(vlan_range[0]),int(vlan_range[1]) + 1):
-                                    add_vlan.append(str(vlan_add))
-                                    allowed_vlan_ids.append(str(vlan_add))
-                            else:
-                                add_vlan.append(vlan)
-                                allowed_vlan_ids.append(vlan)
+                            add_vlan.append(vlan)
+                            allowed_vlan_ids.append(vlan)
 
                     # Remove redundant VLANs from the system
                     for vlan in list_diff(cur_vlan_ids, add_vlan):
-                        cmd = f'bridge vlan del dev {interface} vid {vlan} master'
-                        self._cmd(cmd)
+                        self._cmdl(['bridge', 'vlan', 'del', 'dev', interface, 'vid', str(vlan), 'master'])
 
                     for vlan in allowed_vlan_ids:
-                        cmd = f'bridge vlan add dev {interface} vid {vlan} master'
-                        self._cmd(cmd)
+                        self._cmdl(['bridge', 'vlan', 'add', 'dev', interface, 'vid', str(vlan), 'master'])
 
                     # Setting native VLAN to system
                     if native_vlan_id:
-                        cmd = f'bridge vlan add dev {interface} vid {native_vlan_id} pvid untagged master'
-                        self._cmd(cmd)
+                        self._cmdl(['bridge', 'vlan', 'add', 'dev', interface, 'vid', str(native_vlan_id), 'pvid', 'untagged', 'master'])
 
         super().update(config)

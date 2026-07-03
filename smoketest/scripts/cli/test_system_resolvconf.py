@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -60,6 +60,8 @@ class TestSystemResolvConf(VyOSUnitTestSHIM.TestCase):
         self.cli_delete(base_path_domainname)
         self.cli_delete(base_path_domainsearch)
         self.cli_commit()
+        # always forward to base class
+        super().tearDown()
 
     def test_nameserver(self):
         # Check if server is added to resolv.conf
@@ -109,4 +111,4 @@ class TestSystemResolvConf(VyOSUnitTestSHIM.TestCase):
             self.assertTrue(s not in domain_search)
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

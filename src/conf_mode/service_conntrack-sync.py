@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -67,7 +67,7 @@ def verify(conntrack):
 
     has_peer = False
     for interface, interface_config in conntrack['interface'].items():
-        verify_interface_exists(interface)
+        verify_interface_exists(conntrack, interface)
         # Interface must not only exist, it must also carry an IP address
         if len(get_ipv4(interface)) < 1:
             raise ConfigError(f'Interface {interface} requires an IP address!')
@@ -80,11 +80,11 @@ def verify(conntrack):
     if has_peer:
         for interface, interface_config in conntrack['interface'].items():
             if 'peer' not in interface_config:
-                raise ConfigError('Can not mix unicast and multicast mode!')
+                raise ConfigError('Cannot mix unicast and multicast mode!')
 
     if 'expect_sync' in conntrack:
         if len(conntrack['expect_sync']) > 1 and 'all' in conntrack['expect_sync']:
-            raise ConfigError('Can not configure expect-sync "all" with other protocols!')
+            raise ConfigError('Cannot configure expect-sync "all" with other protocols!')
 
     if 'listen_address' in conntrack:
         for address in conntrack['listen_address']:

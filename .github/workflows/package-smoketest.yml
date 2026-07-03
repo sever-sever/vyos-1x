@@ -1,9 +1,21 @@
-name: VyOS ISO integration Test
+name: VyOS ISO Integration Test
 
 on:
-  pull_request:
+  workflow_dispatch:
+  push:
     branches:
-      - current
+      - rolling
+      - circinus
+      - sagitta
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!**/*.md'
+  pull_request_target:
+    branches:
+      - rolling
+      - circinus
+      - sagitta
     paths:
       - '**'
       - '!.github/**'
@@ -14,169 +26,444 @@ permissions:
   contents: read
 
 env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needed for PR comments
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  BUILD_BY: autobuild@vyos.net
+  DEBIAN_MIRROR: http://deb.debian.org/debian/
+  DEBIAN_SECURITY_MIRROR: http://deb.debian.org/debian-security
 
 jobs:
+  set_config:
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.config.outputs.branch }}
+      vyos_mirror: ${{ steps.config.outputs.vyos_mirror }}
+      container_image: ${{ steps.config.outputs.container_image }}
+      vyos_build_repo: ${{ steps.config.outputs.vyos_build_repo }}
+      build_version_format: ${{ steps.config.outputs.build_version_format }}
+      build_runner: ${{ steps.config.outputs.build_runner }}
+      use_pat: ${{ steps.config.outputs.use_pat }}
+      test_cli_command: ${{ steps.config.outputs.test_cli_command }}
+      test_tpm_tests: ${{ steps.config.outputs.test_tpm_tests }}
+      test_vpp: ${{ steps.config.outputs.test_vpp }}
+      test_vpp_runner: ${{ steps.config.outputs.test_vpp_runner }}
+      install_build_deps: ${{ steps.config.outputs.install_build_deps }}
+      mirror_enabled: ${{ steps.config.outputs.mirror_enabled }}
+      vyos_build_ref: ${{ steps.determine-ref.outputs.vyos_build_ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set branch-specific configuration
+        id: config
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request_target" ]]; then
+            BRANCH="${{ github.event.pull_request.base.ref }}"
+          else
+            BRANCH="${{ github.ref_name }}"
+          fi
+
+          CONFIG=$(jq ".branches[\"${BRANCH}\"]" .github/config/smoketest-branches.json)
+
+          if [ "$CONFIG" = "null" ] || [ -z "$CONFIG" ]; then
+            echo "::error::No smoketest configuration found for branch '${BRANCH}' in .github/config/smoketest-branches.json"
+            exit 1
+          fi
+
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+          echo "vyos_mirror=$(echo $CONFIG | jq -r .vyos_mirror)" >> $GITHUB_OUTPUT
+          echo "container_image=$(echo $CONFIG | jq -r .container_image)" >> $GITHUB_OUTPUT
+          echo "vyos_build_repo=$(echo $CONFIG | jq -r .vyos_build_repo)" >> $GITHUB_OUTPUT
+          echo "build_version_format=$(echo $CONFIG | jq -r .build_version_format)" >> $GITHUB_OUTPUT
+          echo "build_runner=$(echo $CONFIG | jq -c .build_runner)" >> $GITHUB_OUTPUT
+          echo "use_pat=$(echo $CONFIG | jq -r .use_pat)" >> $GITHUB_OUTPUT
+          echo "test_cli_command=$(echo $CONFIG | jq -r .test_cli_command)" >> $GITHUB_OUTPUT
+          echo "test_tpm_tests=$(echo $CONFIG | jq -r .test_tpm_tests)" >> $GITHUB_OUTPUT
+          echo "test_vpp=$(echo $CONFIG | jq -r .test_vpp)" >> $GITHUB_OUTPUT
+          echo "test_vpp_runner=$(echo $CONFIG | jq -c .test_vpp_runner)" >> $GITHUB_OUTPUT
+          echo "install_build_deps=$(echo $CONFIG | jq -r .install_build_deps)" >> $GITHUB_OUTPUT
+          echo "mirror_enabled=$(echo $CONFIG | jq -r .mirror_enabled)" >> $GITHUB_OUTPUT
+
+      - name: Determine vyos-build ref
+        id: determine-ref
+        env:
+          GH_TOKEN: ${{ steps.config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.config.outputs.branch }}"
+          VYOS_BUILD_REPO="${{ steps.config.outputs.vyos_build_repo }}"
+
+          if [[ "${{ github.event_name }}" == "pull_request_target" ]]; then
+            PR_HEAD_REF="${{ github.event.pull_request.head.ref }}"
+
+            # VYOS_BUILD_REPO is in owner/repo format from config
+            REPO_PATH="$VYOS_BUILD_REPO"
+
+            # Get creation date from 90 days ago
+            CREATED_AFTER=$(date -u -d "90 days ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+            echo "Looking for PR in $REPO_PATH with branch '$PR_HEAD_REF' created after $CREATED_AFTER"
+
+            # Query GitHub API for matching PR with merge commit SHA
+            MATCHING_PR_MERGE_SHA=$(gh api repos/$REPO_PATH/pulls \
+              --jq ".[] | select(.created_at > \"$CREATED_AFTER\" and .head.ref == \"$PR_HEAD_REF\") | .merge_commit_sha" 2>&1 | grep -v '^{' | head -1)
+
+            echo "Merge commit SHA: $MATCHING_PR_MERGE_SHA"
+
+            # Check if response is a valid SHA (40-char hex) or an error
+            if [[ $MATCHING_PR_MERGE_SHA =~ ^[a-f0-9]{40}$ ]]; then
+              # Use the merge commit SHA - this is what the code would look like if merged
+              echo "vyos_build_ref=$MATCHING_PR_MERGE_SHA" >> $GITHUB_OUTPUT
+              echo "Found matching open PR in vyos-build with branch '$PR_HEAD_REF', using merge commit: $MATCHING_PR_MERGE_SHA"
+            else
+              echo "vyos_build_ref=$BRANCH" >> $GITHUB_OUTPUT
+              echo "No matching open PR found in vyos-build for branch '$PR_HEAD_REF', falling back to '$BRANCH'"
+            fi
+          else
+            echo "vyos_build_ref=$BRANCH" >> $GITHUB_OUTPUT
+            echo "Using configured branch '$BRANCH'"
+          fi
+
   build_iso:
-    runs-on: ubuntu-24.04
+    needs: set_config
+    runs-on: ${{ fromJson(needs.set_config.outputs.build_runner) }}
     timeout-minutes: 45
+    if: ${{ needs.set_config.outputs.mirror_enabled == 'false' || (needs.set_config.outputs.mirror_enabled == 'true' && github.repository_owner == 'vyos') }}
     container:
-      image: vyos/vyos-build:current
+      image: ${{ needs.set_config.outputs.container_image }}
       options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
-    env:
-      BUILD_BY: autobuild@vyos.net
-      DEBIAN_MIRROR: http://deb.debian.org/debian/
     outputs:
       build_version: ${{ steps.version.outputs.build_version }}
     steps:
       - name: Clone vyos-build source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
-          repository: vyos/vyos-build
+          repository: ${{ needs.set_config.outputs.vyos_build_repo }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+
+      - name: Clone vyos-1x source code into the build directory
+        uses: actions/checkout@v6
+        with:
+          path: build/vyos-1x
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+          persist-credentials: false
+
       - name: Clone vyos-1x source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: packages/vyos-1x
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          submodules: true
+
       - name: Build vyos-1x package
         run: |
-          cd packages/vyos-1x; dpkg-buildpackage -uc -us -tc -b
+          cd packages/vyos-1x
+          if [[ "${{ needs.set_config.outputs.install_build_deps }}" == "true" ]]; then
+            sudo apt-get update
+            sudo apt-get build-dep -y .
+          fi
+          dpkg-buildpackage -uc -us -tc -b
+
       - name: Generate ISO version string
         id: version
         run: |
-          echo "build_version=1.5-integration-$(date -u +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
+          echo "build_version=$(date -u +'${{ needs.set_config.outputs.build_version_format }}')" >> $GITHUB_OUTPUT
+
       - name: Build custom ISO image
         shell: bash
         run: |
           sudo --preserve-env ./build-vyos-image \
           --architecture amd64 \
           --build-by $BUILD_BY \
-          --debian-mirror $DEBIAN_MIRROR \
-          --version ${{ steps.version.outputs.build_version }} \
           --build-type release \
+          --custom-package vyos-1x-smoketest \
+          --debian-mirror $DEBIAN_MIRROR \
+          --debian-security-mirror $DEBIAN_SECURITY_MIRROR \
+          --version ${{ steps.version.outputs.build_version }} \
+          --vyos-mirror ${{ needs.set_config.outputs.vyos_mirror }} \
           generic
-      - uses: actions/upload-artifact@v4
+
+      - uses: actions/upload-artifact@v7
         with:
+          retention-days: 2
           name: vyos-${{ steps.version.outputs.build_version }}
-          path: build/live-image-amd64.hybrid.iso
+          path: |
+            build/live-image-amd64.hybrid.iso
+            build/manifest.json
+
+      - uses: atos-actions/clean-self-hosted-runner@v1.4.10
+        if: ${{ always() && contains(needs.set_config.outputs.build_runner, 'self-hosted') }}
 
   test_smoketest_cli:
-    needs: build_iso
+    needs: [build_iso, set_config]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     container:
-      image: vyos/vyos-build:current
+      image: ${{ needs.set_config.outputs.container_image }}
       options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
     outputs:
       exit_code: ${{ steps.test.outputs.exit_code }}
     steps:
-      # We need the test script from vyos-build repo
       - name: Clone vyos-build source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
-          repository: vyos/vyos-build
-      - uses: actions/download-artifact@v4
+          repository: ${{ needs.set_config.outputs.vyos_build_repo }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+
+      - uses: actions/download-artifact@v8
         with:
           name: vyos-${{ needs.build_iso.outputs.build_version }}
           path: build
-      - name: VyOS CLI smoketests
+
+      - name: VyOS CLI smoketests (no interfaces)
         id: test
         shell: bash
         run: |
-          set -e
-          sudo make test
-          if [[ $? == 0 ]]; then
+          if sudo make ${{ needs.set_config.outputs.test_cli_command }}; then
             echo "exit_code=success" >> $GITHUB_OUTPUT
           else
             echo "exit_code=fail" >> $GITHUB_OUTPUT
+            exit 1
           fi
 
-  test_config_load:
-    needs: build_iso
-    runs-on: ubuntu-24.04
+  test_smoketest_cli_vpp:
+    needs: [build_iso, set_config]
+    if: needs.set_config.outputs.test_vpp == 'true'
+    runs-on: ${{ fromJson(needs.set_config.outputs.test_vpp_runner) }}
     timeout-minutes: 90
     container:
-      image: vyos/vyos-build:current
+      image: ${{ needs.set_config.outputs.container_image }}
       options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
     outputs:
       exit_code: ${{ steps.test.outputs.exit_code }}
     steps:
-      # We need the test script from vyos-build repo
       - name: Clone vyos-build source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
-          repository: vyos/vyos-build
-      - uses: actions/download-artifact@v4
+          repository: ${{ needs.set_config.outputs.vyos_build_repo }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+
+      - uses: actions/download-artifact@v8
         with:
           name: vyos-${{ needs.build_iso.outputs.build_version }}
           path: build
+
+      - name: VyOS CLI smoketests VPP
+        id: test
+        shell: bash
+        run: |
+          if sudo make test-vpp; then
+            echo "exit_code=success" >> $GITHUB_OUTPUT
+          else
+            echo "exit_code=fail" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+  test_interfaces_cli:
+    needs: [build_iso, set_config]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ${{ needs.set_config.outputs.container_image }}
+      options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
+    outputs:
+      exit_code: ${{ steps.test.outputs.exit_code }}
+    steps:
+      - name: Clone vyos-build source code
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.set_config.outputs.vyos_build_repo }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vyos-${{ needs.build_iso.outputs.build_version }}
+          path: build
+
+      - name: VyOS CLI smoketests (interfaces only)
+        id: test
+        shell: bash
+        run: |
+          if sudo make test-interfaces; then
+            echo "exit_code=success" >> $GITHUB_OUTPUT
+          else
+            echo "exit_code=fail" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+  test_config_load:
+    needs: [build_iso, set_config]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.set_config.outputs.container_image }}
+      options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
+    outputs:
+      exit_code: ${{ steps.test.outputs.exit_code }}
+    steps:
+      - name: Clone vyos-build source code
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.set_config.outputs.vyos_build_repo }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vyos-${{ needs.build_iso.outputs.build_version }}
+          path: build
+
       - name: VyOS config load tests
         id: test
         shell: bash
         run: |
-          set -e
-          sudo make testc
-          if [[ $? == 0 ]]; then
+          if sudo make testc; then
             echo "exit_code=success" >> $GITHUB_OUTPUT
           else
             echo "exit_code=fail" >> $GITHUB_OUTPUT
+            exit 1
           fi
 
-  test_raid1_install:
-    needs: build_iso
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+  test_config_load_vpp:
+    needs: [build_iso, set_config]
+    if: needs.set_config.outputs.test_vpp == 'true'
+    runs-on: ${{ fromJson(needs.set_config.outputs.test_vpp_runner) }}
+    timeout-minutes: 90
     container:
-      image: vyos/vyos-build:current
+      image: ${{ needs.set_config.outputs.container_image }}
       options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
     outputs:
       exit_code: ${{ steps.test.outputs.exit_code }}
     steps:
-      # We need the test script from vyos-build repo
       - name: Clone vyos-build source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
-          repository: vyos/vyos-build
-      - uses: actions/download-artifact@v4
+          repository: ${{ needs.set_config.outputs.vyos_build_repo }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+
+      - uses: actions/download-artifact@v8
         with:
           name: vyos-${{ needs.build_iso.outputs.build_version }}
           path: build
+
+      - name: VyOS config load tests VPP
+        id: test
+        shell: bash
+        run: |
+          if sudo make testcvpp; then
+            echo "exit_code=success" >> $GITHUB_OUTPUT
+          else
+            echo "exit_code=fail" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+  test_raid1_install:
+    needs: [build_iso, set_config]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ${{ needs.set_config.outputs.container_image }}
+      options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
+    outputs:
+      exit_code: ${{ steps.test.outputs.exit_code }}
+    steps:
+      - name: Clone vyos-build source code
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.set_config.outputs.vyos_build_repo }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vyos-${{ needs.build_iso.outputs.build_version }}
+          path: build
+
       - name: VyOS RAID1 installation tests
         id: test
         shell: bash
         run: |
-          set -e
-          sudo make testraid
-          if [[ $? == 0 ]]; then
+          if sudo make testraid; then
             echo "exit_code=success" >> $GITHUB_OUTPUT
           else
             echo "exit_code=fail" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+  test_encrypted_config_tpm:
+    needs: [build_iso, set_config]
+    if: needs.set_config.outputs.test_tpm_tests == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ${{ needs.set_config.outputs.container_image }}
+      options: --sysctl net.ipv6.conf.lo.disable_ipv6=0 --privileged
+    outputs:
+      exit_code: ${{ steps.test.outputs.exit_code }}
+    steps:
+      - name: Clone vyos-build source code
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.set_config.outputs.vyos_build_repo }}
+          token: ${{ needs.set_config.outputs.use_pat == 'true' && secrets.PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.set_config.outputs.vyos_build_ref }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vyos-${{ needs.build_iso.outputs.build_version }}
+          path: build
+
+      - name: VyOS TPM encryption tests
+        id: test
+        shell: bash
+        run: |
+          if sudo make testtpm; then
+            echo "exit_code=success" >> $GITHUB_OUTPUT
+          else
+            echo "exit_code=fail" >> $GITHUB_OUTPUT
+            exit 1
           fi
 
   result:
     needs:
+      - set_config
       - test_smoketest_cli
+      - test_smoketest_cli_vpp
+      - test_interfaces_cli
       - test_config_load
+      - test_config_load_vpp
       - test_raid1_install
+      - test_encrypted_config_tpm
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: always()
     steps:
       - name: Add PR comment
-        if: always()
+        if: always() && github.event_name == 'pull_request_target'
         uses: mshick/add-pr-comment@v2
         with:
           message: |
-            CI integration ${{ needs.test_smoketest_cli.outputs.exit_code == 'success' && needs.test_config_load.outputs.exit_code == 'success' && needs.test_raid1_install.outputs.exit_code == 'success' && '👍 passed!' || '❌ failed!' }}
+            CI integration ${{ (needs.test_smoketest_cli.outputs.exit_code == 'success' && needs.test_interfaces_cli.outputs.exit_code == 'success' && needs.test_config_load.outputs.exit_code == 'success' && needs.test_raid1_install.outputs.exit_code == 'success' && (needs.test_smoketest_cli_vpp.outputs.exit_code != 'fail') && (needs.test_config_load_vpp.outputs.exit_code != 'fail') && (needs.test_encrypted_config_tpm.outputs.exit_code != 'fail')) && '👍 passed!' || '❌ failed!' }}
 
             ### Details
 
             [CI logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
             * CLI Smoketests ${{ needs.test_smoketest_cli.outputs.exit_code == 'success' && '👍 passed' || '❌ failed' }}
+            * CLI Smoketests (interfaces only) ${{ needs.test_interfaces_cli.outputs.exit_code == 'success' && '👍 passed' || '❌ failed' }}
             * Config tests ${{ needs.test_config_load.outputs.exit_code == 'success' && '👍 passed' || '❌ failed' }}
             * RAID1 tests ${{ needs.test_raid1_install.outputs.exit_code == 'success' && '👍 passed' || '❌ failed' }}
+            * CLI Smoketests VPP ${{ needs.test_smoketest_cli_vpp.outputs.exit_code == 'success' && '👍 passed' || needs.test_smoketest_cli_vpp.outputs.exit_code == 'fail' && '❌ failed' || '⏭️ skipped' }}
+            * Config tests VPP ${{ needs.test_config_load_vpp.outputs.exit_code == 'success' && '👍 passed' || needs.test_config_load_vpp.outputs.exit_code == 'fail' && '❌ failed' || '⏭️ skipped' }}
+            * TPM tests ${{ needs.test_encrypted_config_tpm.outputs.exit_code == 'success' && '👍 passed' || needs.test_encrypted_config_tpm.outputs.exit_code == 'fail' && '❌ failed' || '⏭️ skipped' }}
 
           message-id: "SMOKETEST_RESULTS"
           allow-repeats: false

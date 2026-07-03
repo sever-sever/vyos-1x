@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -139,7 +139,7 @@ def _reload_config(daemon):
 # define program arguments
 cmd_args_parser = argparse.ArgumentParser(description='restart frr daemons')
 cmd_args_parser.add_argument('--action', choices=['restart'], required=True, help='action to frr daemons')
-cmd_args_parser.add_argument('--daemon', choices=['zebra', 'staticd', 'bgpd', 'eigrpd', 'ospfd', 'ospf6d', 'ripd', 'ripngd', 'isisd', 'pimd', 'pim6d', 'ldpd', 'babeld', 'bfdd'], required=False,  nargs='*', help='select single or multiple daemons')
+cmd_args_parser.add_argument('--daemon', choices=['zebra', 'staticd', 'bgpd', 'eigrpd', 'ospfd', 'ospf6d', 'ripd', 'ripngd', 'isisd', 'pimd', 'pim6d', 'ldpd', 'babeld', 'bfdd', 'fabricd'], required=False,  nargs='*', help='select single or multiple daemons')
 # parse arguments
 cmd_args = cmd_args_parser.parse_args()
 

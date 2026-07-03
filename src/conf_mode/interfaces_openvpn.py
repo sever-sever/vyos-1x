@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -32,6 +32,10 @@ from vyos.base import DeprecationWarning
 from vyos.config import Config
 from vyos.configdict import get_interface_dict
 from vyos.configdict import is_node_changed
+from vyos.configdict import is_vrf_changed
+from vyos.configdiff import get_config_diff
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configverify import verify_vrf
 from vyos.configverify import verify_bridge_delete
 from vyos.configverify import verify_mirror_redirect
@@ -77,9 +81,31 @@ otp_file = '/config/auth/openvpn/{ifname}-otp-secrets'
 secret_chars = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ234567')
 service_file = '/run/systemd/system/openvpn@{ifname}.service.d/20-override.conf'
 
+def _only_client_config_changed(conf, base, ifname):
+    """
+    Return True when the sole diff under this interface is a change to
+    `server.client` entries (i.e. CCD files).
+    """
+
+    iface_path = base + [ifname]
+    diff = get_config_diff(conf)
+
+    def _has_only_changes(path, node):
+        changes = diff.node_changed_children(path)
+        return len(changes) == 1 and changes[0] == node
+
+    # Something outside of 'server' also changed - not a CCD-only change
+    if _has_only_changes(iface_path, 'server'):
+        # Something outside of 'server.client' also changed - not a CCD-only change
+        if _has_only_changes(iface_path + ['server'], 'client'):
+            return True
+
+    return False
+
+
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least the
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least the
     interface name will be added or a deleted flag
     """
     if config:
@@ -94,13 +120,36 @@ def get_config(config=None):
     if 'deleted' in openvpn:
         return openvpn
 
+    if not is_node_changed(conf, base) and dict_search_args(openvpn, 'tls'):
+        diff = get_config_diff(conf)
+        if diff.get_child_nodes_diff(['pki'], recursive=True).get('add') == ['ca', 'certificate']:
+            crl_path = os.path.join(cfg_dir, f'{ifname}_crl.pem')
+            if os.path.exists(crl_path):
+                # do not restart service when changed only CRL and crl file already exist
+                openvpn.update({'no_restart_crl': True})
+            for rec in diff.get_child_nodes_diff(['pki', 'ca'], recursive=True).get('add'):
+                if diff.get_child_nodes_diff(['pki', 'ca', rec], recursive=True).get('add') != ['crl']:
+                    openvpn.update({'no_restart_crl': False})
+                    break
+            if openvpn.get('no_restart_crl'):
+                for rec in diff.get_child_nodes_diff(['pki', 'certificate'], recursive=True).get('add'):
+                    if diff.get_child_nodes_diff(['pki', 'certificate', rec], recursive=True).get('add') != ['revoke']:
+                        openvpn.update({'no_restart_crl': False})
+                        break
+
     if is_node_changed(conf, base + [ifname, 'openvpn-option']):
         openvpn.update({'restart_required': {}})
     if is_node_changed(conf, base + [ifname, 'enable-dco']):
         openvpn.update({'restart_required': {}})
 
+    # Detect changes that are limited to per-client CCD entries (T6478).
+    # OpenVPN reads client-config-dir files at connect time, so adding or
+    # updating them requires neither a SIGHUP nor a service restart.
+    if 'restart_required' not in openvpn and openvpn['mode'] == 'server':
+        openvpn['client_only_changed'] = _only_client_config_changed(conf, base, ifname)
+
     # We have to get the dict using 'get_config_dict' instead of 'get_interface_dict'
-    # as 'get_interface_dict' merges the defaults in, so we can not check for defaults in there.
+    # as 'get_interface_dict' merges the defaults in, so we cannot check for defaults in there.
     tmp = conf.get_config_dict(base + [openvpn['ifname']], get_first_key=True)
 
     # We have to cleanup the config dict, as default values could enable features
@@ -123,6 +172,22 @@ def get_config(config=None):
             openvpn['module_load_dco'] = {}
             break
 
+    # Calculate the protocol modifier. This is concatenated to the protocol string to direct
+    # OpenVPN to use a specific IP protocol version. If unspecified, the kernel decides which
+    # type of socket to open. In server mode, an additional "ipv6-dual-stack" option forces
+    # binding the socket in IPv6 mode, which can also receive IPv4 traffic (when using the
+    # default "ipv6" mode, we specify "bind ipv6only" to disable kernel dual-stack behaviors).
+    if openvpn['ip_version'] == 'ipv4':
+        openvpn['protocol_modifier'] = '4'
+    elif openvpn['ip_version'] in ['ipv6', 'dual-stack']:
+        openvpn['protocol_modifier']  = '6'
+    else:
+        openvpn['protocol_modifier'] = ''
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
+
     return openvpn
 
 def is_ec_private_key(pki, cert_name):
@@ -137,6 +202,12 @@ def is_ec_private_key(pki, cert_name):
 
     key = load_private_key(pki_cert['private']['key'])
     return isinstance(key, ec.EllipticCurvePrivateKey)
+
+
+def verify_data_ciphers_fallback(openvpn):
+    if openvpn['mode'] != 'site-to-site':
+        if dict_search('encryption.data_ciphers_fallback', openvpn):
+            raise ConfigError('Cipher fallback is valid only in site-to-site mode')
 
 def verify_pki(openvpn):
     pki = openvpn['pki']
@@ -257,6 +328,9 @@ def verify(openvpn):
         if openvpn['protocol'] == 'tcp-passive':
             raise ConfigError('Protocol "tcp-passive" is not valid in client mode')
 
+        if 'ip_version' in openvpn and openvpn['ip_version'] == 'dual-stack':
+            raise ConfigError('"ip-version dual-stack" is not supported in client mode')
+
         if dict_search('tls.dh_params', openvpn):
             raise ConfigError('Cannot specify "tls dh-params" in client mode')
 
@@ -264,6 +338,9 @@ def verify(openvpn):
     # OpenVPN site-to-site - VERIFY
     #
     elif openvpn['mode'] == 'site-to-site':
+        if 'ip_version' in openvpn and openvpn['ip_version'] == 'dual-stack':
+            raise ConfigError('"ip-version dual-stack" is not supported in site-to-site mode')
+
         if 'local_address' not in openvpn and 'is_bridge_member' not in openvpn:
             raise ConfigError('Must specify "local-address" or add interface to bridge')
 
@@ -309,7 +386,7 @@ def verify(openvpn):
                 raise ConfigError('"local-address" cannot be the same as "local-host"')
 
             if dict_search('remote_host', openvpn) in dict_search('remote_address', openvpn):
-                raise ConfigError('"remote-address" and "remote-host" can not be the same')
+                raise ConfigError('"remote-address" and "remote-host" cannot be the same')
 
         if openvpn['device_type'] == 'tap' and 'local_address' in openvpn:
             # we can only have one local_address, this is ensured above
@@ -324,6 +401,11 @@ def verify(openvpn):
 
         if dict_search('encryption.data_ciphers', openvpn):
             raise ConfigError('Cipher negotiation can only be used in client or server mode')
+
+        if not dict_search('encryption.cipher', openvpn) and \
+           not dict_search('encryption.data_ciphers_fallback', openvpn):
+            raise ConfigError('Must define "encryption cipher" or "encryption ' \
+                              'data-ciphers-fallback" for site-to-site encryption!')
 
     else:
         # checks for client-server or site-to-site bridged
@@ -487,6 +569,25 @@ def verify(openvpn):
     # not depending on any operation mode
     #
 
+    # verify that local_host/remote_host match with any ip_version override
+    # specified (if a dns name is specified for remote_host, no attempt is made
+    # to verify that record resolves to an address of the configured family)
+    if 'local_host' in openvpn:
+        if openvpn['ip_version'] == 'ipv4' and is_ipv6(openvpn['local_host']):
+            raise ConfigError('Cannot use an IPv6 "local-host" with "ip-version ipv4"')
+        elif openvpn['ip_version'] == 'ipv6' and is_ipv4(openvpn['local_host']):
+            raise ConfigError('Cannot use an IPv4 "local-host" with "ip-version ipv6"')
+        elif openvpn['ip_version'] == 'dual-stack':
+            raise ConfigError('Cannot use "local-host" with "ip-version dual-stack". "dual-stack" is only supported when OpenVPN binds to all available interfaces.')
+
+    if 'remote_host' in openvpn:
+        remote_hosts = dict_search('remote_host', openvpn)
+        for remote_host in remote_hosts:
+            if openvpn['ip_version'] == 'ipv4' and is_ipv6(remote_host):
+                raise ConfigError('Cannot use an IPv6 "remote-host" with "ip-version ipv4"')
+            elif openvpn['ip_version'] == 'ipv6' and is_ipv4(remote_host):
+                raise ConfigError('Cannot use an IPv4 "remote-host" with "ip-version ipv6"')
+
     # verify specified IP address is present on any interface on this system
     if 'local_host' in openvpn:
         if not is_addr_assigned(openvpn['local_host']):
@@ -559,6 +660,8 @@ def verify(openvpn):
     verify_vrf(openvpn)
     verify_bond_bridge_member(openvpn)
     verify_mirror_redirect(openvpn)
+
+    verify_data_ciphers_fallback(openvpn)
 
     return None
 
@@ -679,7 +782,7 @@ def generate(openvpn):
     # create client config directory on demand
     makedir(ccd_dir, user, group)
 
-    # Fix file permissons for keys
+    # Fix file permissions for keys
     generate_pki_files(openvpn)
 
     # Generate User/Password authentication file
@@ -706,11 +809,11 @@ def generate(openvpn):
     # we need to support quoting of raw parameters from OpenVPN CLI
     # see https://vyos.dev/T1632
     render(cfg_file.format(**openvpn), 'openvpn/server.conf.j2', openvpn,
-           formater=lambda _: _.replace("&quot;", '"'), user=user, group=group)
+           formatter=lambda _: _.replace("&quot;", '"'), user=user, group=group)
 
     # Render 20-override.conf for OpenVPN service
     render(service_file.format(**openvpn), 'openvpn/service-override.conf.j2', openvpn,
-           formater=lambda _: _.replace("&quot;", '"'), user=user, group=group)
+           formatter=lambda _: _.replace("&quot;", '"'), user=user, group=group)
     # Reload systemd services config to apply an override
     call(f'systemctl daemon-reload')
 
@@ -730,7 +833,7 @@ def apply(openvpn):
             VTunIf(interface).remove()
 
     # dynamically load/unload DCO Kernel extension if requested
-    dco_module = 'ovpn_dco_v2'
+    dco_module = 'ovpn'
     if 'module_load_dco' in openvpn:
         check_kmod(dco_module)
     else:
@@ -749,13 +852,18 @@ def apply(openvpn):
 
     # No matching OpenVPN process running - maybe it got killed or none
     # existed - nevertheless, spawn new OpenVPN process
-    action = 'reload-or-restart'
-    if 'restart_required' in openvpn:
-        action = 'restart'
-    call(f'systemctl {action} openvpn@{interface}.service')
+
+    if not openvpn.get('no_restart_crl') and not openvpn.get('client_only_changed'):
+        action = 'reload-or-restart'
+        if 'restart_required' in openvpn:
+            action = 'restart'
+        call(f'systemctl {action} openvpn@{interface}.service')
 
     o = VTunIf(**openvpn)
     o.update(openvpn)
+
+    # run the dependents
+    call_dependents()
 
     return None
 

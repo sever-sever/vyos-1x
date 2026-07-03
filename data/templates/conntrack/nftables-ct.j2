@@ -16,32 +16,41 @@ table ip vyos_conntrack {
 {% endif %}
          return
     }
-    chain VYOS_CT_TIMEOUT {
 {% if timeout.custom.ipv4.rule is vyos_defined %}
+    chain VYOS_CT_TIMEOUT {
 {%     for rule, rule_config in timeout.custom.ipv4.rule.items() %}
         # rule-{{ rule }} {{ '- ' ~ rule_config.description if rule_config.description is vyos_defined }}
         {{ rule_config | conntrack_rule(rule, 'timeout', ipv6=False) }}
 {%     endfor %}
-{% endif %}
         return
     }
 
-{% if timeout.custom.ipv4.rule is vyos_defined %}
 {%     for rule, rule_config in timeout.custom.ipv4.rule.items() %}
     ct timeout ct-timeout-{{ rule }} {
         l3proto ip;
 {%         for protocol, protocol_config in rule_config.protocol.items() %}
         protocol {{ protocol }};
+{%             if protocol_config | count > 0 %}
         policy = { {{ protocol_config | conntrack_ct_policy() }} }
+{%             endif %}
 {%         endfor %}
     }
 {%     endfor %}
+
+    chain PREROUTING_CT_TIMEOUT {
+        type filter hook prerouting priority -199; policy accept;
+        counter jump VYOS_CT_TIMEOUT
+    }
+
+    chain OUTPUT_CT_TIMEOUT {
+        type filter hook output priority -199; policy accept;
+        counter jump VYOS_CT_TIMEOUT
+    }
 {% endif %}
 
     chain PREROUTING {
         type filter hook prerouting priority -300; policy accept;
         counter jump VYOS_CT_IGNORE
-        counter jump VYOS_CT_TIMEOUT
         counter jump FW_CONNTRACK
         counter jump NAT_CONNTRACK
         counter jump WLB_CONNTRACK
@@ -58,7 +67,6 @@ table ip vyos_conntrack {
     chain OUTPUT {
         type filter hook output priority -300; policy accept;
         counter jump VYOS_CT_IGNORE
-        counter jump VYOS_CT_TIMEOUT
         counter jump FW_CONNTRACK
         counter jump NAT_CONNTRACK
 {% if wlb_local_action %}
@@ -106,32 +114,41 @@ table ip6 vyos_conntrack {
 {% endif %}
         return
     }
-    chain VYOS_CT_TIMEOUT {
 {% if timeout.custom.ipv6.rule is vyos_defined %}
+    chain VYOS_CT_TIMEOUT {
 {%     for rule, rule_config in timeout.custom.ipv6.rule.items() %}
         # rule-{{ rule }} {{ '- ' ~ rule_config.description if rule_config.description is vyos_defined }}
         {{ rule_config | conntrack_rule(rule, 'timeout', ipv6=True) }}
 {%     endfor %}
-{% endif %}
         return
     }
 
-{% if timeout.custom.ipv6.rule is vyos_defined %}
 {%     for rule, rule_config in timeout.custom.ipv6.rule.items() %}
     ct timeout ct-timeout-{{ rule }} {
         l3proto ip;
 {%         for protocol, protocol_config in rule_config.protocol.items() %}
         protocol {{ protocol }};
+{%             if protocol_config | count > 0 %}
         policy = { {{ protocol_config | conntrack_ct_policy() }} }
+{%             endif %}
 {%         endfor %}
     }
 {%     endfor %}
+
+    chain PREROUTING_CT_TIMEOUT {
+        type filter hook prerouting priority -199; policy accept;
+        counter jump VYOS_CT_TIMEOUT
+    }
+
+    chain OUTPUT_CT_TIMEOUT {
+        type filter hook output priority -199; policy accept;
+        counter jump VYOS_CT_TIMEOUT
+    }
 {% endif %}
 
     chain PREROUTING {
         type filter hook prerouting priority -300; policy accept;
         counter jump VYOS_CT_IGNORE
-        counter jump VYOS_CT_TIMEOUT
         counter jump FW_CONNTRACK
         counter jump NAT_CONNTRACK
         notrack
@@ -147,7 +164,6 @@ table ip6 vyos_conntrack {
     chain OUTPUT {
         type filter hook output priority -300; policy accept;
         counter jump VYOS_CT_IGNORE
-        counter jump VYOS_CT_TIMEOUT
         counter jump FW_CONNTRACK
         counter jump NAT_CONNTRACK
         notrack

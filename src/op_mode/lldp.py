@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -64,7 +64,7 @@ def _get_formatted_output(raw_data):
     tmp = dict_search('lldp.interface', raw_data)
     if not tmp:
         return None
-    # One can not always ensure that "interface" is of type list, add safeguard.
+    # One cannot always ensure that "interface" is of type list, add safeguard.
     # E.G. Juniper Networks, Inc. ex2300-c-12t only has a dict, not a list of dicts
     if isinstance(tmp, dict):
         tmp = [tmp]
@@ -87,7 +87,7 @@ def _get_formatted_output(raw_data):
             # Capabilities
             cap = ''
             capabilities = jmespath.search('chassis.[*][0][0].capability', values)
-            # One can not always ensure that "capability" is of type list, add
+            # One cannot always ensure that "capability" is of type list, add
             # safeguard. E.G. Unify US-24-250W only has a dict, not a list of dicts
             if isinstance(capabilities, dict):
                 capabilities = [capabilities]

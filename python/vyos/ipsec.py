@@ -1,4 +1,4 @@
-# Copyright 2020-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -65,7 +65,7 @@ def get_vici_sas_by_name(ike_name: str, tunnel: str) -> list:
     Find installed SAs by IKE_SA name and/or CHILD_SA name
     and return list with SASs info.
     If tunnel is not None return a list contained only
-    CHILD_SAs wich names equal tunnel value.
+    CHILD_SAs which names equal tunnel value.
     :param ike_name: IKE SA name
     :type ike_name: str
     :param tunnel: CHILD SA name

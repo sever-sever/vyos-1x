@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -54,7 +54,7 @@ CMD_INTERFACES_LIST: list[str] = [
     "ethtool --phy-statistics "
 ]
 
-# get intefaces info
+# get interfaces info
 interfaces_list = os.popen('ls /sys/class/net/').read().split()
 
 # modify CMD_INTERFACES_LIST for all interfaces

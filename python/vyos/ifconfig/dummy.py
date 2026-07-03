@@ -1,4 +1,4 @@
-# Copyright 2019-2021 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -22,8 +22,6 @@ class DummyIf(Interface):
     interface. The purpose of a dummy interface is to provide a device to route
     packets through without actually transmitting them.
     """
-
-    iftype = 'dummy'
     definition = {
         **Interface.definition,
         **{
@@ -31,3 +29,6 @@ class DummyIf(Interface):
             'prefixes': ['dum', ],
         },
     }
+
+    def _create(self):
+        super()._create('dummy')

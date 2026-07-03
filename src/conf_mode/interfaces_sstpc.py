@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2022 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -20,6 +20,9 @@ from sys import exit
 from vyos.config import Config
 from vyos.configdict import get_interface_dict
 from vyos.configdict import is_node_changed
+from vyos.configdict import is_vrf_changed
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configverify import verify_authentication
 from vyos.configverify import verify_vrf
 from vyos.ifconfig import SSTPCIf
@@ -37,7 +40,7 @@ airbag.enable()
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least the
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least the
     interface name will be added or a deleted flag
     """
     if config:
@@ -56,6 +59,10 @@ def get_config(config=None):
             sstpc.update({'shutdown_required': {}})
             # bail out early - no need to further process other nodes
             break
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
 
     return sstpc
 
@@ -107,6 +114,9 @@ def apply(sstpc):
             p = SSTPCIf(ifname)
             p.remove()
         call(f'systemctl stop ppp@{ifname}.service')
+
+        # run the dependents and return
+        call_dependents()
         return None
 
     # reconnect should only be necessary when specific options change,
@@ -127,6 +137,9 @@ def apply(sstpc):
         if os.path.isdir(f'/sys/class/net/{ifname}'):
             p = SSTPCIf(ifname)
             p.update(sstpc)
+
+    # run the dependents
+    call_dependents()
 
     return None
 

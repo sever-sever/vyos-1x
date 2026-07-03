@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020-2024 VyOS maintainers and contributors
+ * Copyright VyOS maintainers and contributors <maintainers@vyos.io>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 or later as
@@ -18,8 +18,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <stdint.h>
@@ -55,17 +57,21 @@ enum {
     SUCCESS =      1 << 0,
     ERROR_COMMIT = 1 << 1,
     ERROR_DAEMON = 1 << 2,
-    PASS =         1 << 3
+    PASS =         1 << 3,
+    ERROR_COMMIT_APPLY = 1 << 4
 };
 
 volatile int init_alarm = 0;
 volatile int timeout = 0;
 
-int initialization(void *);
+int initialization(void *, char *);
 int pass_through(char **, int);
 void timer_handler(int);
+void leave_hint(char *);
 
 double get_posix_clock_time(void);
+
+static char * s_recv_string (void *, int);
 
 int main(int argc, char* argv[])
 {
@@ -92,8 +98,17 @@ int main(int argc, char* argv[])
     char *test = strstr(string_node_data, "VYOS_TAGNODE_VALUE");
     ex_index = test ? 2 : 1;
 
+    char *env_tmp = getenv("VYATTA_CONFIG_TMP");
+    if (env_tmp == NULL) {
+        fprintf(stderr, "Error: Environment variable VYATTA_CONFIG_TMP is not set.\n");
+        exit(EXIT_FAILURE);
+    }
+    char *pid_str = strdup(env_tmp);
+    strsep(&pid_str, "_");
+    debug_print("config session pid: %s\n", pid_str);
+
     if (access(COMMIT_MARKER, F_OK) != -1) {
-        init_timeout = initialization(requester);
+        init_timeout = initialization(requester, pid_str);
         if (!init_timeout) remove(COMMIT_MARKER);
     }
 
@@ -117,36 +132,51 @@ int main(int argc, char* argv[])
 
     zmq_send(requester, string_node_data_msg, strlen(string_node_data_msg), 0);
     zmq_recv(requester, error_code, 1, 0);
-    debug_print("Received node data receipt\n");
+    debug_print("Received node data receipt with error_code\n");
 
-    int err = (int)error_code[0];
+    char msg_size_str[7];
+    zmq_recv(requester, msg_size_str, 6, 0);
+    msg_size_str[6] = '\0';
+    int msg_size = (int)strtol(msg_size_str, NULL, 16);
+    debug_print("msg_size: %d\n", msg_size);
+
+    char *msg = s_recv_string(requester, msg_size);
+    printf("%s", msg);
+    free(msg);
 
     free(string_node_data_msg);
 
-    zmq_close(requester);
-    zmq_ctx_destroy(context);
+    int err = (int)error_code[0];
+    int ret = 0;
 
     if (err & PASS) {
         debug_print("Received PASS\n");
-        int ret = pass_through(argv, ex_index);
-        return ret;
+        ret = pass_through(argv, ex_index);
     }
 
     if (err & ERROR_DAEMON) {
         debug_print("Received ERROR_DAEMON\n");
-        int ret = pass_through(argv, ex_index);
-        return ret;
+        ret = pass_through(argv, ex_index);
     }
 
     if (err & ERROR_COMMIT) {
         debug_print("Received ERROR_COMMIT\n");
-        return -1;
+        ret = -1;
     }
 
-    return 0;
+    if (err & ERROR_COMMIT_APPLY) {
+        debug_print("Received ERROR_COMMIT_APPLY\n");
+        leave_hint(pid_str);
+        ret = -1;
+    }
+
+    zmq_close(requester);
+    zmq_ctx_destroy(context);
+
+    return ret;
 }
 
-int initialization(void* Requester)
+int initialization(void* Requester, char* pid_val)
 {
     char *active_str = NULL;
     size_t active_len = 0;
@@ -174,16 +204,26 @@ int initialization(void* Requester)
     double prev_time_value, time_value;
     double time_diff;
 
-    char *pid_val = getenv("VYATTA_CONFIG_TMP");
-    strsep(&pid_val, "_");
-    debug_print("config session pid: %s\n", pid_val);
-
     char *sudo_user = getenv("SUDO_USER");
     if (!sudo_user) {
         char nobody[] = "nobody";
         sudo_user = nobody;
     }
     debug_print("sudo_user is %s\n", sudo_user);
+
+    char *temp_config_dir = getenv("VYATTA_TEMP_CONFIG_DIR");
+    if (!temp_config_dir) {
+        char none[] = "";
+        temp_config_dir = none;
+    }
+    debug_print("temp_config_dir is %s\n", temp_config_dir);
+
+    char *changes_only_dir = getenv("VYATTA_CHANGES_ONLY_DIR");
+    if (!changes_only_dir) {
+        char none[] = "";
+        changes_only_dir = none;
+    }
+    debug_print("changes_only_dir is %s\n", changes_only_dir);
 
     debug_print("Sending init announcement\n");
     char *init_announce = mkjson(MKJSON_OBJ, 1,
@@ -252,6 +292,16 @@ int initialization(void* Requester)
     zmq_recv(Requester, buffer, 16, 0);
     debug_print("Received sudo_user receipt\n");
 
+    debug_print("Sending config session temp_config_dir\n");
+    zmq_send(Requester, temp_config_dir, strlen(temp_config_dir), 0);
+    zmq_recv(Requester, buffer, 16, 0);
+    debug_print("Received temp_config_dir receipt\n");
+
+    debug_print("Sending config session changes_only_dir\n");
+    zmq_send(Requester, changes_only_dir, strlen(changes_only_dir), 0);
+    zmq_recv(Requester, buffer, 16, 0);
+    debug_print("Received changes_only_dir receipt\n");
+
     return 0;
 }
 
@@ -303,6 +353,16 @@ void timer_handler(int signum)
     return;
 }
 
+void leave_hint(char *pid_val)
+{
+    char tmp_str[16];
+    mode_t omask = umask(0);
+    snprintf(tmp_str, sizeof(tmp_str), "/tmp/apply_%s", pid_val);
+    open(tmp_str, O_CREAT|O_RDWR|O_TRUNC, 0666);
+    chown(tmp_str, 1002, 102);
+    umask(omask);
+}
+
 #ifdef _POSIX_MONOTONIC_CLOCK
 double get_posix_clock_time(void)
 {
@@ -318,3 +378,15 @@ double get_posix_clock_time(void)
 double get_posix_clock_time(void)
 {return (double)0;}
 #endif
+
+//  Receive string from socket and convert into C string
+static char * s_recv_string (void *socket, int bufsize) {
+    char * buffer = (char *)malloc(bufsize+1);
+    int size = zmq_recv(socket, buffer, bufsize, 0);
+    if (size == -1)
+        return NULL;
+    if (size > bufsize)
+        size = bufsize;
+    buffer[size] = '\0';
+    return buffer;
+}

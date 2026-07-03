@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2022-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,10 +17,13 @@
 import re
 import unittest
 
-from collections import OrderedDict
 from base_accel_ppp_test import BasicAccelPPPTest
+from base_vyostest_shim import VyOSUnitTestSHIM
+from collections import OrderedDict
+
 from vyos.configsession import ConfigSessionError
 from vyos.utils.process import cmd
+from vyos.template import range_to_regex
 from configparser import ConfigParser
 from configparser import RawConfigParser
 
@@ -228,6 +231,113 @@ delegate={delegate_1_prefix},{delegate_mask},name={pool_name}
 delegate={delegate_2_prefix},{delegate_mask},name={pool_name}"""
         self.assertIn(pool_config, config)
 
+    def test_ipoe_server_vlan(self):
+        vlans = ['100', '200', '300-310']
+
+        # Test configuration of local authentication for PPPoE server
+        self.basic_config()
+        # cannot use "client-subnet" option with "vlan" option
+        # have to delete it
+        self.delete(['interface', interface, 'client-subnet'])
+        self.cli_commit()
+
+        self.set(['interface', interface, 'vlan-mon'])
+
+        # cannot use option "vlan-mon" if no "vlan" set
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        for vlan in vlans:
+            self.set(['interface', interface, 'vlan', vlan])
+
+        # commit changes
+        self.cli_commit()
+
+        # Validate configuration values
+        conf = ConfigParser(allow_no_value=True, delimiters='=', strict=False)
+        conf.read(self._config_file)
+        tmp = range_to_regex(vlans)
+        self.assertIn(f're:^{interface}\.{tmp}$', conf['ipoe']['interface'])
+
+        tmp = ','.join(vlans)
+        self.assertIn(f'{interface},{tmp}', conf['ipoe']['vlan-mon'])
+
+    def test_ipoe_server_static_client_ip_address(self):
+        mac_address = '08:00:27:2f:d8:06'
+        ip_address = '192.0.2.100'
+
+        # Test configuration of local authentication for PPPoE server
+        self.basic_config()
+        # Rewrite authentication from basic_config
+        self.set(
+            [
+                'authentication',
+                'interface',
+                interface,
+                'mac',
+                mac_address,
+                'ip-address',
+                ip_address,
+            ]
+        )
+        self.set(['authentication', 'mode', 'local'])
+        # commit changes
+        self.cli_commit()
+
+        # Validate configuration values
+        conf = ConfigParser(allow_no_value=True, delimiters='=', strict=False)
+        conf.read(self._config_file)
+
+        # basic verification
+        self.verify(conf)
+
+        # check local users
+        tmp = cmd(f'sudo cat {self._chap_secrets}')
+        regex = f'{interface}\s+\*\s+{mac_address}\s+{ip_address}'
+        tmp = re.findall(regex, tmp)
+        self.assertTrue(tmp)
+
+    def test_ipoe_server_start_session(self):
+        start_session = 'auto'
+
+        # Configuration of local authentication for PPPoE server
+        self.basic_config()
+        self.cli_commit()
+
+        # Validate configuration values
+        conf = ConfigParser(allow_no_value=True, delimiters='=', strict=False)
+        conf.read(self._config_file)
+        # if 'start-session' option is not set the default value is 'dhcp'
+        self.assertIn(f'start=dhcpv4', conf['ipoe']['interface'])
+
+        # change 'start-session' option to 'auto'
+        self.set(['interface', interface, 'start-session', start_session])
+        self.cli_commit()
+
+        # Validate changed configuration values
+        conf = ConfigParser(allow_no_value=True, delimiters='=', strict=False)
+        conf.read(self._config_file)
+        self.assertIn(f'start={start_session}', conf['ipoe']['interface'])
+
+    def test_ipoe_server_idle_timeout(self):
+        idle_timeout = '300'
+
+        self.basic_config()
+        self.cli_commit()
+
+        # Default: no idle-timeout emitted
+        conf = ConfigParser(allow_no_value=True, delimiters='=', strict=False)
+        conf.read(self._config_file)
+        self.assertNotIn('idle-timeout', conf['ipoe'])
+
+        # Configure idle-timeout
+        self.set(['idle-timeout', idle_timeout])
+        self.cli_commit()
+
+        conf = ConfigParser(allow_no_value=True, delimiters='=', strict=False)
+        conf.read(self._config_file)
+        self.assertEqual(conf['ipoe']['idle-timeout'], idle_timeout)
+
     @unittest.skip("PPP is not a part of IPoE")
     def test_accel_ppp_options(self):
         pass
@@ -237,4 +347,4 @@ delegate={delegate_2_prefix},{delegate_mask},name={pool_name}"""
         pass
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

@@ -1,0 +1,18 @@
+[Unit]
+After=
+After=vyos-router.service
+ConditionPathExists=
+ConditionPathExists=/run/vpp/vpp.conf
+OnFailure=vpp-failure-handler.service
+
+[Service]
+EnvironmentFile=
+ExecStart=
+ExecStart=/usr/bin/vpp -c /run/vpp/vpp.conf
+WorkingDirectory=
+WorkingDirectory=/run/vpp
+Restart=no
+Type=notify
+# T8011 avoid duplicating logs
+StandardOutput=null
+StandardError=null

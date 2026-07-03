@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -35,7 +35,8 @@ class NetNSTest(VyOSUnitTestSHIM.TestCase):
         tmp = cmd('ip netns ls')
         self.assertFalse(tmp)
 
-        super(NetNSTest, self).tearDown()
+        # always forward to base class
+        super().tearDown()
 
     def test_netns_create(self):
         namespaces = ['mgmt', 'front', 'back']
@@ -76,4 +77,4 @@ class NetNSTest(VyOSUnitTestSHIM.TestCase):
             self.assertFalse(is_netns_interface(interface, netns))
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

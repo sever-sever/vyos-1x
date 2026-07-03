@@ -3,6 +3,7 @@
 {%     for iface, iface_config in interface.items() %}
 interface {{ iface }}
 {%         if iface_config.authentication.plaintext_password is vyos_defined %}
+ ip ospf authentication
  ip ospf authentication-key {{ iface_config.authentication.plaintext_password }}
 {%         elif iface_config.authentication.md5 is vyos_defined %}
  ip ospf authentication message-digest
@@ -11,6 +12,8 @@ interface {{ iface }}
  ip ospf message-digest-key {{ key }} md5 {{ key_config.md5_key }}
 {%                 endfor %}
 {%             endif %}
+{%         elif iface_config.authentication.null is vyos_defined %}
+ ip ospf authentication null
 {%         endif %}
 {%         if iface_config.area is vyos_defined %}
  ip ospf area {{ iface_config.area }}
@@ -29,6 +32,9 @@ interface {{ iface }}
 {%         endif %}
 {%         if iface_config.retransmit_interval is vyos_defined %}
  ip ospf retransmit-interval {{ iface_config.retransmit_interval }}
+{%         endif %}
+{%         if iface_config.retransmit_window is vyos_defined %}
+ ip ospf retransmit-window {{ iface_config.retransmit_window }}
 {%         endif %}
 {%         if iface_config.transmit_delay is vyos_defined %}
  ip ospf transmit-delay {{ iface_config.transmit_delay }}
@@ -79,7 +85,7 @@ router ospf {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%     for area_id, area_config in area.items() %}
 {%         if area_config.area_type is vyos_defined %}
 {%             for type, type_config in area_config.area_type.items() if type != 'normal' %}
- area {{ area_id }} {{ type }} {{ 'no-summary' if type_config.no_summary is vyos_defined }}
+ area {{ area_id }} {{ type }} {{ 'translate-' + type_config.translate if type_config.translate is vyos_defined }} {{ 'no-summary' if type_config.no_summary is vyos_defined }}
 {%                 if type_config.default_cost is vyos_defined %}
  area {{ area_id }} default-cost {{ type_config.default_cost }}
 {%                 endif %}
@@ -118,14 +124,17 @@ router ospf {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%         if area_config.virtual_link is vyos_defined %}
 {%             for link, link_config in area_config.virtual_link.items() %}
 {%                 if link_config.authentication.plaintext_password is vyos_defined %}
+ area {{ area_id }} virtual-link {{ link }} authentication
  area {{ area_id }} virtual-link {{ link }} authentication-key {{ link_config.authentication.plaintext_password }}
 {%                 elif link_config.authentication.md5.key_id is vyos_defined %}
 {%                     for key, key_config in link_config.authentication.md5.key_id.items() %}
  area {{ area_id }} virtual-link {{ link }} message-digest-key {{ key }} md5 {{ key_config.md5_key }}
 {%                     endfor %}
+{%                 elif link_config.authentication.null is vyos_defined %}
+ area {{ area_id }} virtual-link {{ link }} authentication null
 {%                 endif %}
 {#         The following values are default values #}
- area {{ area_id }} virtual-link {{ link }} hello-interval {{ link_config.hello_interval }} retransmit-interval {{ link_config.retransmit_interval }} transmit-delay {{ link_config.transmit_delay }} dead-interval {{ link_config.dead_interval }}
+ area {{ area_id }} virtual-link {{ link }} hello-interval {{ link_config.hello_interval }} retransmit-interval {{ link_config.retransmit_interval }} retransmit-window {{ link_config.retransmit_window }} transmit-delay {{ link_config.transmit_delay }} dead-interval {{ link_config.dead_interval }}
 {%             endfor %}
 {%         endif %}
 {%     endfor %}
@@ -217,7 +226,7 @@ router ospf {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%     for protocol, options in redistribute.items() %}
 {%         if protocol == 'table' %}
 {%             for table, table_options in options.items() %}
- redistribute {{ protocol }} {{ table }} {{ 'metric ' ~ table_options.metric if table_options.metric is vyos_defined }} {{ 'metric-type ' ~ table_options.metric_type if table_options.metric_type is vyos_defined }} {{ 'route-map ' ~ table_options.route_map if table_options.route_map is vyos_defined }}
+ redistribute table-direct {{ table }} {{ 'metric ' ~ table_options.metric if table_options.metric is vyos_defined }} {{ 'metric-type ' ~ table_options.metric_type if table_options.metric_type is vyos_defined }} {{ 'route-map ' ~ table_options.route_map if table_options.route_map is vyos_defined }}
 {%             endfor %}
 {%         else %}
  redistribute {{ protocol }} {{ 'metric ' ~ options.metric if options.metric is vyos_defined }} {{ 'metric-type ' ~ options.metric_type if options.metric_type is vyos_defined }} {{ 'route-map ' ~ options.route_map if options.route_map is vyos_defined }}
@@ -233,6 +242,7 @@ router ospf {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%     endfor %}
 {% endif %}
 {% if segment_routing is vyos_defined %}
+ segment-routing on
 {%     if segment_routing.maximum_label_depth is vyos_defined %}
  segment-routing node-msd {{ segment_routing.maximum_label_depth }}
 {%     endif %}
@@ -252,7 +262,6 @@ router ospf {{ 'vrf ' ~ vrf if vrf is vyos_defined }}
 {%             endif %}
 {%         endfor %}
 {%     endif %}
- segment-routing on
 {% endif %}
 {% if timers.throttle.spf.delay is vyos_defined and timers.throttle.spf.initial_holdtime is vyos_defined and timers.throttle.spf.max_holdtime is vyos_defined %}
 {#   Timer values have default values #}

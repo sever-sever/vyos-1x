@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -14,25 +14,39 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import re
 import os
+import json
 
+from copy import deepcopy
 from passlib.hosts import linux_context
 from psutil import users
-from pwd import getpwall
-from pwd import getpwnam
-from pwd import getpwuid
 from sys import exit
 from time import sleep
 
+from vyos.base import Warning
+from vyos.base import DeprecationWarning
 from vyos.config import Config
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configverify import verify_vrf
+from vyos.defaults import SSH_DSA_DEPRECATION_WARNING
 from vyos.template import render
 from vyos.template import is_ipv4
+from vyos.utils.auth import DEFAULT_PASSWORD
+from vyos.utils.auth import EPasswdStrength
+from vyos.utils.auth import evaluate_strength
 from vyos.utils.auth import get_current_user
+from vyos.utils.auth import get_local_passwd_entries
+from vyos.utils.auth import get_local_users
+from vyos.utils.auth import get_user_home_dir
+from vyos.utils.auth import MIN_USER_UID
 from vyos.utils.configfs import delete_cli_node
 from vyos.utils.configfs import add_cli_node
 from vyos.utils.dict import dict_search
-from vyos.utils.file import chown
+from vyos.utils.file import move_recursive
+from vyos.utils.network import is_addr_assigned
+from vyos.utils.permission import chown
 from vyos.utils.process import cmd
 from vyos.utils.process import call
 from vyos.utils.process import run
@@ -47,37 +61,21 @@ radius_config_file = "/etc/pam_radius_auth.conf"
 tacacs_pam_config_file = "/etc/tacplus_servers"
 tacacs_nss_config_file = "/etc/tacplus_nss.conf"
 nss_config_file = "/etc/nsswitch.conf"
+login_motd_dsa_warning = r'/run/motd.d/92-vyos-user-dsa-deprecation-warning'
 
-# Minimum UID used when adding system users
-MIN_USER_UID: int = 1000
-# Maximim UID used when adding system users
-MAX_USER_UID: int = 59999
 # LOGIN_TIMEOUT from /etc/loign.defs minus 10 sec
 MAX_RADIUS_TIMEOUT: int = 50
-# MAX_RADIUS_TIMEOUT divided by 2 sec (minimum recomended timeout)
+# MAX_RADIUS_TIMEOUT divided by 2 sec (minimum recommended timeout)
 MAX_RADIUS_COUNT: int = 8
 # Maximum number of supported TACACS servers
 MAX_TACACS_COUNT: int = 8
+# Minimum USER id for TACACS users
+MIN_TACACS_UID = 900
 
-# List of local user accounts that must be preserved
-SYSTEM_USER_SKIP_LIST: list = ['radius_user', 'radius_priv_user', 'tacacs0', 'tacacs1',
-                              'tacacs2', 'tacacs3', 'tacacs4', 'tacacs5', 'tacacs6',
-                              'tacacs7', 'tacacs8', 'tacacs9', 'tacacs10',' tacacs11',
-                              'tacacs12', 'tacacs13', 'tacacs14', 'tacacs15']
+# As of OpenSSH 9.8p1 in Debian trixie, DSA keys are no longer supported
+SSH_DSA_DEPRECATION_WARNING: str = f'{SSH_DSA_DEPRECATION_WARNING} '\
+'The following users are using SSH-DSS keys for authentication.'
 
-def get_local_users():
-    """Return list of dynamically allocated users (see Debian Policy Manual)"""
-    local_users = []
-    for s_user in getpwall():
-        if getpwnam(s_user.pw_name).pw_uid < MIN_USER_UID:
-            continue
-        if getpwnam(s_user.pw_name).pw_uid > MAX_USER_UID:
-            continue
-        if s_user.pw_name in SYSTEM_USER_SKIP_LIST:
-            continue
-        local_users.append(s_user.pw_name)
-
-    return local_users
 
 def get_shadow_password(username):
     with open('/etc/shadow') as f:
@@ -119,6 +117,13 @@ def get_config(config=None):
     rm_users = [tmp for tmp in all_users if tmp not in cli_users]
     if rm_users: login.update({'rm_users' : rm_users})
 
+    # Build TACACS user mapping
+    if 'tacacs' in login:
+        login['exclude_users'] = get_local_users(min_uid=0,
+                                                 max_uid=MIN_TACACS_UID) + cli_users
+        login['tacacs_min_uid'] = MIN_TACACS_UID
+
+    set_dependents('ssh', conf)
     return login
 
 def verify(login):
@@ -131,19 +136,53 @@ def verify(login):
             raise ConfigError(f'Attempting to delete current user: {tmp}')
 
     if 'user' in login:
-        system_users = getpwall()
+        system_users = get_local_passwd_entries()
         for user, user_config in login['user'].items():
-            # Linux system users range up until UID 1000, we can not create a
+            # Linux system users range up until UID 1000, we cannot create a
             # VyOS CLI user which already exists as system user
             for s_user in system_users:
                 if s_user.pw_name == user and s_user.pw_uid < MIN_USER_UID:
-                    raise ConfigError(f'User "{user}" can not be created, conflict with local system account!')
+                    raise ConfigError(f'User "{user}" cannot be created, conflict with local system account!')
 
-            for pubkey, pubkey_options in (dict_search('authentication.public_keys', user_config) or {}).items():
+            plaintext_password = dict_search('authentication.plaintext_password', user_config)
+            if plaintext_password == DEFAULT_PASSWORD:
+                Warning(f'Default password used for user "{user}" - consider changing it')
+
+            # T6353: Check password for complexity using cracklib.
+            # A user password should be sufficiently complex
+            failed_check_status = [EPasswdStrength.WEAK, EPasswdStrength.ERROR]
+            if plaintext_password and len(plaintext_password) > 0:
+                result = evaluate_strength(plaintext_password)
+                if result['strength'] in failed_check_status:
+                    tmp = result['error']
+                    Warning(f'User "{user}" - {tmp}')
+
+            for pubkey, pubkey_options in dict_search('authentication.public_keys', user_config,
+                                                      default={}).items():
                 if 'type' not in pubkey_options:
                     raise ConfigError(f'Missing type for public-key "{pubkey}"!')
                 if 'key' not in pubkey_options:
                     raise ConfigError(f'Missing key for public-key "{pubkey}"!')
+
+            if 'operator' in user_config:
+                op_groups = dict_search('operator.group', user_config)
+                if op_groups:
+                    for og in op_groups:
+                        if dict_search(f'operator_group.{og}', login) is None:
+                            raise ConfigError(f'Operator group {og} does not exist')
+                else:
+                    raise ConfigError(f'User {user} is configured as an operator but is not assigned to any operator groups')
+
+    # Deprecation Warning for SSH DSS keys.
+    gen_header = True
+    if 'user' in login:
+        for user, user_config in login['user'].items():
+            for pubkey, pubkey_options in (dict_search('authentication.public_keys', user_config) or {}).items():
+                if 'type' in pubkey_options and pubkey_options['type'] == 'ssh-dss':
+                    if gen_header:
+                        gen_header = False
+                        DeprecationWarning(SSH_DSA_DEPRECATION_WARNING)
+                    print(f'User "{user}" with deprecated public-key named: {pubkey}')
 
     if {'radius', 'tacacs'} <= set(login):
         raise ConfigError('Using both RADIUS and TACACS at the same time is not supported!')
@@ -175,12 +214,16 @@ def verify(login):
 
         verify_vrf(login['radius'])
 
-        if 'source_address' in login['radius']:
+        if addresses := dict_search('radius.source_address', login):
             ipv4_count = 0
             ipv6_count = 0
-            for address in login['radius']['source_address']:
+            radius_vrf = dict_search('radius.vrf', login)
+            for address in addresses:
                 if is_ipv4(address): ipv4_count += 1
                 else:                ipv6_count += 1
+
+                if not is_addr_assigned(address, vrf=radius_vrf):
+                    Warning(f'Specified RADIUS source-address "{address}" is not assigned!')
 
             if ipv4_count > 1:
                 raise ConfigError('Only one IPv4 source-address can be set!')
@@ -198,12 +241,17 @@ def verify(login):
                 fail = False
 
         if fail:
-            raise ConfigError('All RADIUS servers are disabled')
+            raise ConfigError('All TACACS servers are disabled')
 
         if tacacs_servers_count > MAX_TACACS_COUNT:
             raise ConfigError(f'Number of TACACS servers exceeded maximum of {MAX_TACACS_COUNT}!')
 
         verify_vrf(login['tacacs'])
+
+        if tmp := dict_search('tacacs.source_address', login):
+            tacacs_vrf = dict_search('tacacs.vrf', login)
+            if not is_addr_assigned(tmp, vrf=tacacs_vrf):
+                Warning(f'Specified TACACS source-address "{tmp}" is not assigned!')
 
     if 'max_login_session' in login and 'timeout' not in login:
         raise ConfigError('"login timeout" must be configured!')
@@ -280,6 +328,34 @@ def generate(login):
         if os.path.isfile(autologout_file):
             os.unlink(autologout_file)
 
+    # Operator groups and group membership
+    operator_config = {'users': {}, 'groups': {}}
+    if 'user' in login:
+        for user, user_config in login['user'].items():
+            op_groups = dict_search('operator.group', user_config)
+            if op_groups:
+                operator_config['users'][user] = op_groups
+
+    if 'operator_group' in login:
+        operator_config['groups'] = login['operator_group']
+
+        # Convert permissions strings to list
+        # so that the operational command runner doesn't have to
+        for g in operator_config['groups']:
+            policy = dict_search(f'command_policy.allow', operator_config['groups'][g])
+            if policy is not None:
+                policy = list(map(lambda s: re.split(r'\s+', s), policy))
+                operator_config['groups'][g]['command_policy']['allow'] = policy
+
+    # Generate MOTD informing the user(s) for possible deprecated SSH keys
+    tmp = deepcopy(login)
+    tmp['ssh_dsa_deprecation_warning'] = f'DEPRECATION WARNING: {SSH_DSA_DEPRECATION_WARNING}'
+    render(login_motd_dsa_warning, 'login/motd_user_dsa_warning.j2', tmp,
+        permission=0o644, user='root', group='root')
+
+    with open('/etc/vyos/operators.json', 'w') as of:
+        json.dump(operator_config, of)
+
     return None
 
 
@@ -305,32 +381,59 @@ def apply(login):
             tmp = dict_search('full_name', user_config)
             if tmp: command += f" --comment '{tmp}'"
 
-            tmp = dict_search('home_directory', user_config)
-            if tmp: command += f" --home '{tmp}'"
-            else: command += f" --home '/home/{user}'"
+            home_directory = dict_search('home_directory', user_config)
+            if not home_directory:
+                home_directory = f'/home/{user}'
+            command += f" --home '{home_directory}'"
 
-            command += f' --groups frr,frrvty,vyattacfg,sudo,adm,dip,disk,_kea {user}'
+            if 'operator' not in user_config:
+                command += f' --groups frr,frrvty,vyattacfg,sudo,adm,dip,disk,_kea,vpp'
+
+            command += f' {user}'
+
             try:
                 cmd(command)
                 # we should not rely on the value stored in user_config['home_directory'], as a
                 # crazy user will choose username root or any other system user which will fail.
                 #
                 # XXX: Should we deny using root at all?
-                home_dir = getpwnam(user).pw_dir
+                home_dir = get_user_home_dir(user)
                 # always re-render SSH keys with appropriate permissions
                 render(f'{home_dir}/.ssh/authorized_keys', 'login/authorized_keys.j2',
                        user_config, permission=0o600,
-                       formater=lambda _: _.replace("&quot;", '"'),
+                       formatter=lambda _: _.replace("&quot;", '"'),
                        user=user, group='users')
+
+                principals_file = f'{home_dir}/.ssh/authorized_principals'
+                if dict_search('authentication.principal', user_config):
+                    render(principals_file, 'login/authorized_principals.j2',
+                           user_config, permission=0o600,
+                           formatter=lambda _: _.replace("&quot;", '"'),
+                           user=user, group='users')
+                else:
+                    if os.path.exists(principals_file):
+                        os.unlink(principals_file)
+
             except Exception as e:
                 raise ConfigError(f'Adding user "{user}" raised exception: "{e}"')
+
+            # After invoking 'useradd' for each user, if /var/.users_backups/{user} exists, restore the
+            # backed up files to the newly created home directory. This reinstates the user's
+            # SSH environment and avoids loss of access or trust relationships due to the user
+            # creation process, which does not copy such custom files by default.
+            #
+            # More details: https://github.com/vyos/vyos-1x/pull/4678#pullrequestreview-3169648265
+            backup_directory = f"/var/.users_backups/{user}"
+            if command.startswith('useradd') and os.path.exists(backup_directory):
+                move_recursive(backup_directory, home_dir)
+                chown(home_dir, user=user, group='users', recursive=True)
 
             # T5875: ensure UID is properly set on home directory if user is re-added
             # the home directory will always exist, as it's created above by --create-home,
             # retrieve current owner of home directory and adjust on demand
             dir_owner = None
             try:
-                dir_owner = getpwuid(os.stat(home_dir).st_uid).pw_name
+                dir_owner = get_local_passwd_entries(os.stat(home_dir).st_uid).pw_name
             except:
                 pass
 
@@ -338,14 +441,15 @@ def apply(login):
                     chown(home_dir, user=user, recursive=True)
 
             # Generate 2FA/MFA One-Time-Pad configuration
+            google_auth_file = f'{home_dir}/.google_authenticator'
             if dict_search('authentication.otp.key', user_config):
                 enable_otp = True
-                render(f'{home_dir}/.google_authenticator', 'login/pam_otp_ga.conf.j2',
+                render(google_auth_file, 'login/pam_otp_ga.conf.j2',
                        user_config, permission=0o400, user=user, group='users')
             else:
                 # delete configuration as it's not enabled for the user
-                if os.path.exists(f'{home_dir}/.google_authenticator'):
-                    os.remove(f'{home_dir}/.google_authenticator')
+                if os.path.exists(google_auth_file):
+                    os.unlink(google_auth_file)
 
             # Lock/Unlock local user account
             lock_unlock = '--unlock'
@@ -358,6 +462,22 @@ def apply(login):
             try:
                 # Disable user to prevent re-login
                 call(f'usermod -s /sbin/nologin {user}')
+
+                home_dir = get_user_home_dir(user)
+                # Remove SSH authorized keys file
+                authorized_keys_file = f'{home_dir}/.ssh/authorized_keys'
+                if os.path.exists(authorized_keys_file):
+                    os.unlink(authorized_keys_file)
+
+                # Remove SSH authorized principals file
+                principals_file = f'{home_dir}/.ssh/authorized_principals'
+                if os.path.exists(principals_file):
+                    os.unlink(principals_file)
+
+                # Remove Google Authenticator file
+                google_auth_file = f'{home_dir}/.google_authenticator'
+                if os.path.exists(google_auth_file):
+                    os.unlink(google_auth_file)
 
                 # Logout user if he is still logged in
                 if user in list(set([tmp[0] for tmp in users()])):
@@ -397,8 +517,9 @@ def apply(login):
     # Enable/disable Google authenticator
     cmd('pam-auth-update --disable mfa-google-authenticator')
     if enable_otp:
-        cmd(f'pam-auth-update --enable mfa-google-authenticator')
+        cmd('pam-auth-update --enable mfa-google-authenticator')
 
+    call_dependents()
     return None
 
 

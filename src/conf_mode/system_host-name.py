@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -23,6 +23,7 @@ import vyos.hostsd_client
 from vyos.base import Warning
 from vyos.config import Config
 from vyos.configdict import leaf_node_changed
+from vyos.defaults import systemd_services
 from vyos.ifconfig import Section
 from vyos.template import is_ip
 from vyos.utils.process import cmd
@@ -38,7 +39,7 @@ default_config_data = {
     'domain_search': [],
     'nameserver': [],
     'nameservers_dhcp_interfaces': {},
-    'snmpd_restart_reqired': False,
+    'snmpd_restart_required': False,
     'static_host_mapping': {}
 }
 
@@ -56,7 +57,7 @@ def get_config(config=None):
 
     base = ['system']
     if leaf_node_changed(conf, base + ['host-name']) or leaf_node_changed(conf, base + ['domain-name']):
-        hosts['snmpd_restart_reqired'] = True
+        hosts['snmpd_restart_required'] = True
 
     # This may happen if the config is not loaded yet,
     # e.g. if run by cloud-init
@@ -118,7 +119,7 @@ def verify(hosts):
                 raise ConfigError(f'Invalid alias "{a}" in static-host-mapping "{host}"')
 
     for interface, interface_config in hosts['nameservers_dhcp_interfaces'].items():
-        # Warnin user if interface does not have DHCP or DHCPv6 configured
+        # Warning user if interface does not have DHCP or DHCPv6 configured
         if not set(interface_config).intersection(['dhcp', 'dhcpv6']):
             Warning(f'"{interface}" is not a DHCP interface but uses DHCP name-server option!')
 
@@ -174,11 +175,13 @@ def apply(config):
 
     # Restart services that use the hostname
     if hostname_new != hostname_old:
-        call("systemctl restart rsyslog.service")
+        tmp = systemd_services['syslog']
+        call(f'systemctl restart {tmp}')
 
     # If SNMP is running, restart it too
-    if process_named_running('snmpd') and config['snmpd_restart_reqired']:
-        call('systemctl restart snmpd.service')
+    if process_named_running('snmpd') and config['snmpd_restart_required']:
+        tmp = systemd_services['snmpd']
+        call(f'systemctl restart {tmp}')
 
     return None
 

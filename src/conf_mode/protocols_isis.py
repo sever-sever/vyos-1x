@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,16 +18,16 @@ from sys import exit
 from sys import argv
 
 from vyos.config import Config
-from vyos.configdict import dict_merge
-from vyos.configdict import node_changed
+from vyos.configverify import has_frr_protocol_in_dict
 from vyos.configverify import verify_common_route_maps
 from vyos.configverify import verify_interface_exists
+from vyos.frrender import FRRender
+from vyos.frrender import get_frrender_dict
 from vyos.ifconfig import Interface
 from vyos.utils.dict import dict_search
 from vyos.utils.network import get_interface_config
-from vyos.template import render_to_string
+from vyos.utils.process import is_systemd_service_running
 from vyos import ConfigError
-from vyos import frr
 from vyos import airbag
 airbag.enable()
 
@@ -37,54 +37,22 @@ def get_config(config=None):
     else:
         conf = Config()
 
+    return get_frrender_dict(conf, argv)
+
+def verify(config_dict):
+    if not has_frr_protocol_in_dict(config_dict, 'isis'):
+        return None
+
     vrf = None
-    if len(argv) > 1:
-        vrf = argv[1]
+    if 'vrf_context' in config_dict:
+        vrf = config_dict['vrf_context']
 
-    base_path = ['protocols', 'isis']
+    # equivalent of the C foo ? 'a' : 'b' statement
+    isis = vrf and dict_search(f'vrf.name.{vrf}.protocols.isis',
+                                 config_dict) or config_dict['isis']
+    isis['policy'] = config_dict['policy']
 
-    # eqivalent of the C foo ? 'a' : 'b' statement
-    base = vrf and ['vrf', 'name', vrf, 'protocols', 'isis'] or base_path
-    isis = conf.get_config_dict(base, key_mangling=('-', '_'),
-                                get_first_key=True,
-                                no_tag_node_value_mangle=True)
-
-    # Assign the name of our VRF context. This MUST be done before the return
-    # statement below, else on deletion we will delete the default instance
-    # instead of the VRF instance.
-    if vrf: isis['vrf'] = vrf
-
-    # FRR has VRF support for different routing daemons. As interfaces belong
-    # to VRFs - or the global VRF, we need to check for changed interfaces so
-    # that they will be properly rendered for the FRR config. Also this eases
-    # removal of interfaces from the running configuration.
-    interfaces_removed = node_changed(conf, base + ['interface'])
-    if interfaces_removed:
-        isis['interface_removed'] = list(interfaces_removed)
-
-    # Bail out early if configuration tree does no longer exist. this must
-    # be done after retrieving the list of interfaces to be removed.
-    if not conf.exists(base):
-        isis.update({'deleted' : ''})
-        return isis
-
-    # merge in default values
-    isis = conf.merge_defaults(isis, recursive=True)
-
-    # We also need some additional information from the config, prefix-lists
-    # and route-maps for instance. They will be used in verify().
-    #
-    # XXX: one MUST always call this without the key_mangling() option! See
-    # vyos.configverify.verify_common_route_maps() for more information.
-    tmp = conf.get_config_dict(['policy'])
-    # Merge policy dict into "regular" config dict
-    isis = dict_merge(tmp, isis)
-
-    return isis
-
-def verify(isis):
-    # bail out early - looks like removal from running config
-    if not isis or 'deleted' in isis:
+    if 'deleted' in isis:
         return None
 
     if 'net' not in isis:
@@ -101,8 +69,8 @@ def verify(isis):
     if 'interface' not in isis:
         raise ConfigError('Interface used for routing updates is mandatory!')
 
-    for interface in isis['interface']:
-        verify_interface_exists(interface)
+    for interface, interface_config in isis['interface'].items():
+        verify_interface_exists(isis, interface)
         # Interface MTU must be >= configured lsp-mtu
         mtu = Interface(interface).get_mtu()
         area_mtu = isis['lsp_mtu']
@@ -114,15 +82,35 @@ def verify(isis):
                               f'Recommended area lsp-mtu {recom_area_mtu} or less ' \
                               '(calculated on MTU size).')
 
-        if 'vrf' in isis:
+        if vrf:
             # If interface specific options are set, we must ensure that the
             # interface is bound to our requesting VRF. Due to the VyOS
             # priorities the interface is bound to the VRF after creation of
             # the VRF itself, and before any routing protocol is configured.
-            vrf = isis['vrf']
             tmp = get_interface_config(interface)
             if 'master' not in tmp or tmp['master'] != vrf:
                 raise ConfigError(f'Interface "{interface}" is not a member of VRF "{vrf}"!')
+
+        # Fast reroute validation
+        # LFA and TI-LFA of the same level cannot be configured on the same interface
+        # To configure Remote LFA, LFA of the same level should be configured on this interface.
+        if 'fast_reroute' in interface_config:
+            isis_frr_config = interface_config['fast_reroute']
+            levels = ['level_1', 'level_2']
+            if 'lfa' and 'ti_lfa' in isis_frr_config:
+                for isis_level in levels:
+                    if ((dict_search(f'lfa.{isis_level}.enable', isis_frr_config) is not None)
+                            and (dict_search(f'ti_lfa.{isis_level}', isis_frr_config) is not None)):
+                        raise ConfigError(
+                            f'LFA and TI-LFA at the "{str(isis_level).replace("_","-")}" '
+                            f'cannot be configured on the same interface "{interface}"!')
+            if 'remote_lfa' in isis_frr_config:
+                for isis_level in levels:
+                    if ((dict_search(f'remote_lfa.{isis_level}', isis_frr_config) is not None)
+                            and (dict_search(f'lfa.{isis_level}.enable', isis_frr_config) is None)):
+                        raise ConfigError(
+                            f'To configure Remote LFA, LFA at the same level '
+                            f'should be configured on interface "{interface}"!')
 
     # If md5 and plaintext-password set at the same time
     for password in ['area_password', 'domain_password']:
@@ -158,7 +146,7 @@ def verify(isis):
                 for redistr_level, redistr_config in proto_config.items():
                     if proc_level and proc_level != 'level_1_2' and proc_level != redistr_level:
                         raise ConfigError(f'"protocols isis redistribute {afi} {proto} {redistr_level}" ' \
-                                          f'can not be used with \"protocols isis level {proc_level}\"!')
+                                          f'cannot be used with \"protocols isis level {proc_level}\"!')
 
     # Segment routing checks
     if dict_search('segment_routing.global_block', isis):
@@ -264,41 +252,32 @@ def verify(isis):
         if int(len(isis['fast_reroute']['lfa']['remote']['prefix_list'].items())) > 1:
             raise ConfigError(f'LFA remote prefix-list has more than one configured. Cannot have more than one configured.')
 
+    # Check for lsp-timers violations
+    # Must be in sync with FRR yang limitations in yang/frr-isisd.yang
+    if int(isis['lsp_gen_interval']) >= int(isis['lsp_refresh_interval']):
+        raise ConfigError(f'lsp-gen-interval must be less then lsp-refresh-interval')
+    if int(isis['max_lsp_lifetime']) < int(isis['lsp_refresh_interval']) + 300:
+        raise ConfigError(
+            f'max-lsp-lifetime must be greater or equal to lsp-refresh-interval + 300'
+        )
+
+    # Check IS-IS SRv6
+    if dict_search('segment_routing.srv6', isis):
+        # The interface used to install SRv6 SIDs in the Linux data plane.
+        # https://docs.frrouting.org/en/stable-10.2/isisd.html#clicmd-interface-NAME
+        if not dict_search('segment_routing.srv6.interface', isis):
+            raise ConfigError('Missing interface used for installing SRv6 SIDs')
+
     return None
 
-def generate(isis):
-    if not isis or 'deleted' in isis:
-        return None
-
-    isis['frr_isisd_config'] = render_to_string('frr/isisd.frr.j2', isis)
+def generate(config_dict):
+    if config_dict and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().generate(config_dict)
     return None
 
-def apply(isis):
-    isis_daemon = 'isisd'
-
-    # Save original configuration prior to starting any commit actions
-    frr_cfg = frr.FRRConfig()
-
-    # Generate empty helper string which can be ammended to FRR commands, it
-    # will be either empty (default VRF) or contain the "vrf <name" statement
-    vrf = ''
-    if 'vrf' in isis:
-        vrf = ' vrf ' + isis['vrf']
-
-    frr_cfg.load_configuration(isis_daemon)
-    frr_cfg.modify_section(f'^router isis VyOS{vrf}', stop_pattern='^exit', remove_stop_mark=True)
-
-    for key in ['interface', 'interface_removed']:
-        if key not in isis:
-            continue
-        for interface in isis[key]:
-            frr_cfg.modify_section(f'^interface {interface}', stop_pattern='^exit', remove_stop_mark=True)
-
-    if 'frr_isisd_config' in isis:
-        frr_cfg.add_before(frr.default_add_before, isis['frr_isisd_config'])
-
-    frr_cfg.commit_configuration(isis_daemon)
-
+def apply(config_dict):
+    if config_dict and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().apply()
     return None
 
 if __name__ == '__main__':

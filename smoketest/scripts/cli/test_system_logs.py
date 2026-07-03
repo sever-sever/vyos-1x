@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,17 +18,19 @@ import re
 import unittest
 from base_vyostest_shim import VyOSUnitTestSHIM
 from vyos.utils.file import read_file
+from vyos.xml_ref import default_value
 
 # path to logrotate configs
 logrotate_atop_file = '/etc/logrotate.d/vyos-atop'
 logrotate_rsyslog_file = '/etc/logrotate.d/vyos-rsyslog'
-# default values
-default_atop_maxsize = '10M'
-default_atop_rotate = '10'
-default_rsyslog_size = '1M'
-default_rsyslog_rotate = '10'
 
 base_path = ['system', 'logs']
+
+# default values
+default_atop_maxsize = f"{default_value(base_path + ['logrotate', 'atop', 'max-size'])}M"
+default_atop_rotate = default_value(base_path + ['logrotate', 'atop', 'rotate'])
+default_rsyslog_size = f"{default_value(base_path + ['logrotate', 'messages', 'max-size'])}M"
+default_rsyslog_rotate = default_value(base_path + ['logrotate', 'messages', 'rotate'])
 
 
 def logrotate_config_parse(file_path):
@@ -56,10 +58,11 @@ def logrotate_config_parse(file_path):
 
 
 class TestSystemLogs(VyOSUnitTestSHIM.TestCase):
-
     def tearDown(self):
         self.cli_delete(base_path)
         self.cli_commit()
+        # always forward to base class
+        super().tearDown()
 
     def test_logs_defaults(self):
         # test with empty section for default values
@@ -114,4 +117,4 @@ class TestSystemLogs(VyOSUnitTestSHIM.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

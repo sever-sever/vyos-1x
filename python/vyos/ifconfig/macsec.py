@@ -1,4 +1,4 @@
-# Copyright 2020-2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -27,7 +27,6 @@ class MACsecIf(Interface):
     other security solutions such as IPsec (layer 3) or TLS (layer 4), as all
     those solutions are used for their own specific use cases.
     """
-    iftype = 'macsec'
     definition = {
         **Interface.definition,
         **{
@@ -43,7 +42,7 @@ class MACsecIf(Interface):
         """
 
         # create tunnel interface
-        cmd  = 'ip link add link {source_interface} {ifname} type {type}'.format(**self.config)
+        cmd  = 'ip link add link {source_interface} {ifname} type macsec'.format(**self.config)
         cmd += f' cipher {self.config["security"]["cipher"]}'
 
         if 'encrypt' in self.config["security"]:

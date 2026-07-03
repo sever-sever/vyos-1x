@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,6 +18,7 @@ import re
 import unittest
 
 from base_interfaces_test import BasicInterfaceTest
+from base_vyostest_shim import VyOSUnitTestSHIM
 
 from vyos.configsession import ConfigSessionError
 from vyos.ifconfig import Section
@@ -49,7 +50,9 @@ class MACsecInterfaceTest(BasicInterfaceTest.TestCase):
         super(MACsecInterfaceTest, cls).setUpClass()
 
     def tearDown(self):
+        # always forward to base class
         super().tearDown()
+
         self.assertFalse(process_named_running(PROCESS_NAME))
 
     def test_macsec_encryption(self):
@@ -269,4 +272,4 @@ class MACsecInterfaceTest(BasicInterfaceTest.TestCase):
         self.assertTrue(tmp['linkinfo']['info_data']['encrypt'])
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

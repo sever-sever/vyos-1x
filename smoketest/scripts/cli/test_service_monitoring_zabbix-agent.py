@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -23,6 +23,7 @@ from vyos.utils.file import read_file
 
 PROCESS_NAME = 'zabbix_agent2'
 ZABBIX_AGENT_CONF = '/run/zabbix/zabbix-agent2.conf'
+ZABBIX_PSK_FILE = f'/run/zabbix/zabbix-agent2.psk'
 base_path = ['service', 'monitoring', 'zabbix-agent']
 
 
@@ -30,12 +31,12 @@ class TestZabbixAgent(VyOSUnitTestSHIM.TestCase):
     def tearDown(self):
         # Check for running process
         self.assertTrue(process_named_running(PROCESS_NAME))
-
         self.cli_delete(base_path)
         self.cli_commit()
-
         # Process must be terminated after deleting the config
         self.assertFalse(process_named_running(PROCESS_NAME))
+        # always forward to base class
+        super().tearDown()
 
     def test_01_zabbix_agent(self):
         directory = '/tmp'
@@ -82,6 +83,26 @@ class TestZabbixAgent(VyOSUnitTestSHIM.TestCase):
         self.assertIn(f'Timeout={timeout}', config)
         self.assertIn(f'Hostname={hostname}', config)
 
+    def test_02_zabbix_agent_psk_auth(self):
+        secret = '8703ce4cb3f51279acba895e1421d69d8a7e2a18546d013d564ad87ac3957f29'
+        self.cli_set(base_path + ['server', '127.0.0.1'])
+        self.cli_set(base_path + ['authentication', 'mode', 'pre-shared-secret'])
+        self.cli_set(base_path + ['authentication', 'psk', 'id', 'smoke_test'])
+        self.cli_set(base_path + ['authentication', 'psk', 'secret', secret])
+        self.cli_commit()
+
+        config = read_file(ZABBIX_AGENT_CONF)
+        self.assertIn('TLSConnect=psk', config)
+        self.assertIn('TLSAccept=psk', config)
+        self.assertIn('TLSPSKIdentity=smoke_test', config)
+        self.assertIn(f'TLSPSKFile={ZABBIX_PSK_FILE}', config)
+        self.assertEqual(secret, read_file(ZABBIX_PSK_FILE))
+
+        secret = '8703ce4cb3f51279acba895e1421d69d8a7e2a18546d013d564ad87ac3957f88'
+        self.cli_set(base_path + ['authentication', 'psk', 'secret', secret])
+        self.cli_commit()
+        self.assertEqual(secret, read_file(ZABBIX_PSK_FILE))
+
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

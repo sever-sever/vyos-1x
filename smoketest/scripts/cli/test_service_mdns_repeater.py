@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -21,40 +21,50 @@ from base_vyostest_shim import VyOSUnitTestSHIM
 from configparser import ConfigParser
 from vyos.configsession import ConfigSessionError
 from vyos.utils.process import process_named_running
+from vyos.xml_ref import default_value
 
 base_path = ['service', 'mdns', 'repeater']
 intf_base = ['interfaces', 'dummy']
 config_file = '/run/avahi-daemon/avahi-daemon.conf'
-
+PROCESS_NAME = 'avahi-daemon'
 
 class TestServiceMDNSrepeater(VyOSUnitTestSHIM.TestCase):
-    def setUp(self):
-        # Start with a clean CLI instance
-        self.cli_delete(base_path)
+    @classmethod
+    def setUpClass(cls):
+        super(TestServiceMDNSrepeater, cls).setUpClass()
 
-        # Service required a configured IP address on the interface
-        self.cli_set(intf_base + ['dum10', 'address', '192.0.2.1/30'])
-        self.cli_set(intf_base + ['dum10', 'ipv6', 'address', 'no-default-link-local'])
-        self.cli_set(intf_base + ['dum20', 'address', '192.0.2.5/30'])
-        self.cli_set(intf_base + ['dum20', 'address', '2001:db8:0:2::5/64'])
-        self.cli_set(intf_base + ['dum30', 'address', '192.0.2.9/30'])
-        self.cli_set(intf_base + ['dum30', 'address', '2001:db8:0:2::9/64'])
-        self.cli_set(intf_base + ['dum40', 'address', '2001:db8:0:2::11/64'])
-        self.cli_commit()
+        # ensure we can also run this test on a live system - so lets clean
+        # out the current configuration :)
+        cls.cli_delete(cls, base_path)
+
+        cls.cli_set(cls, intf_base + ['dum10', 'address', '192.0.2.1/30'])
+        cls.cli_set(cls, intf_base + ['dum10', 'ipv6', 'address', 'no-default-link-local'])
+        cls.cli_set(cls, intf_base + ['dum20', 'address', '192.0.2.5/30'])
+        cls.cli_set(cls, intf_base + ['dum20', 'address', '2001:db8:0:2::5/64'])
+        cls.cli_set(cls, intf_base + ['dum30', 'address', '192.0.2.9/30'])
+        cls.cli_set(cls, intf_base + ['dum30', 'address', '2001:db8:0:2::9/64'])
+        cls.cli_set(cls, intf_base + ['dum40', 'address', '2001:db8:0:2::11/64'])
+
+        cls.cli_commit(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.cli_delete(cls, intf_base + ['dum10'])
+        cls.cli_delete(cls, intf_base + ['dum20'])
+        cls.cli_delete(cls, intf_base + ['dum30'])
+        cls.cli_delete(cls, intf_base + ['dum40'])
+
+        cls.cli_commit(cls)
 
     def tearDown(self):
         # Check for running process
-        self.assertTrue(process_named_running('avahi-daemon'))
-
+        self.assertTrue(process_named_running(PROCESS_NAME))
         self.cli_delete(base_path)
-        self.cli_delete(intf_base + ['dum10'])
-        self.cli_delete(intf_base + ['dum20'])
-        self.cli_delete(intf_base + ['dum30'])
-        self.cli_delete(intf_base + ['dum40'])
         self.cli_commit()
-
         # Check that there is no longer a running process
-        self.assertFalse(process_named_running('avahi-daemon'))
+        self.assertFalse(process_named_running(PROCESS_NAME))
+        # always forward to base class
+        super().tearDown()
 
     def test_service_dual_stack(self):
         # mDNS browsing domains in addition to the default one (local)
@@ -92,7 +102,7 @@ class TestServiceMDNSrepeater(VyOSUnitTestSHIM.TestCase):
         self.cli_set(base_path + ['interface', 'dum10'])
         self.cli_set(base_path + ['interface', 'dum40'])
 
-        # exception is raised if partcipating interfaces do not have IPv4 address
+        # exception is raised if participating interfaces do not have IPv4 address
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
         self.cli_delete(base_path + ['interface', 'dum40'])
@@ -109,12 +119,12 @@ class TestServiceMDNSrepeater(VyOSUnitTestSHIM.TestCase):
         self.assertEqual(conf['reflector']['enable-reflector'], 'yes')
 
     def test_service_ipv6(self):
-        # partcipating interfaces should have IPv6 addresses
+        # participating interfaces should have IPv6 addresses
         self.cli_set(base_path + ['ip-version', 'ipv6'])
         self.cli_set(base_path + ['interface', 'dum10'])
         self.cli_set(base_path + ['interface', 'dum30'])
 
-        # exception is raised if partcipating interfaces do not have IPv4 address
+        # exception is raised if participating interfaces do not have IPv4 address
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
         self.cli_delete(base_path + ['interface', 'dum10'])
@@ -130,5 +140,38 @@ class TestServiceMDNSrepeater(VyOSUnitTestSHIM.TestCase):
         self.assertEqual(conf['server']['allow-interfaces'], 'dum30, dum40')
         self.assertEqual(conf['reflector']['enable-reflector'], 'yes')
 
+    def test_service_max_cache_entries(self):
+        cli_default_max_cache = default_value(base_path + ['cache-entries'])
+        self.cli_set(base_path)
+
+        # Need at least two interfaces
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_set(base_path + ['interface', 'dum20'])
+
+        # Need at least two interfaces
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_set(base_path + ['interface', 'dum30'])
+
+        self.cli_commit()
+
+        # Validate configuration values
+        conf = ConfigParser(delimiters='=')
+        conf.read(config_file)
+        self.assertEqual(conf['server']['cache-entries-max'], cli_default_max_cache)
+
+        # Set max cache entries
+        cache_entries = '1234'
+        self.cli_set(base_path + ['cache-entries', cache_entries])
+
+        self.cli_commit()
+
+        # Validate configuration values
+        conf = ConfigParser(delimiters='=')
+        conf.read(config_file)
+
+        self.assertEqual(conf['server']['cache-entries-max'], cache_entries)
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

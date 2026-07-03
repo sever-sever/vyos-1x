@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -80,7 +80,7 @@ def get_config(config=None):
     if tmp: monitoring.update({'restart_required': {}})
 
     # We have gathered the dict representation of the CLI, but there are default
-    # options which we need to update into the dictionary retrived.
+    # options which we need to update into the dictionary retrieved.
     monitoring = conf.merge_defaults(monitoring, recursive=True)
 
     monitoring['custom_scripts_dir'] = custom_scripts_dir
@@ -198,7 +198,7 @@ def generate(monitoring):
 
     chown(cache_dir, 'telegraf', 'telegraf')
 
-    # Create custome scripts dir
+    # Create custom scripts dir
     if not os.path.exists(custom_scripts_dir):
         os.mkdir(custom_scripts_dir)
 

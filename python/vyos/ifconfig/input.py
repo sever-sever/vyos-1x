@@ -1,4 +1,4 @@
-# Copyright 2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -25,8 +25,6 @@ class InputIf(Interface):
     a single stack of qdiscs, classes and filters can be shared between
     multiple interfaces.
     """
-
-    iftype = 'ifb'
     definition = {
         **Interface.definition,
         **{
@@ -34,3 +32,6 @@ class InputIf(Interface):
             'prefixes': ['ifb', ],
         },
     }
+
+    def _create(self):
+        super()._create('ifb')

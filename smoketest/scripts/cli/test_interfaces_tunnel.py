@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2022 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,6 +17,7 @@
 import unittest
 
 from base_interfaces_test import BasicInterfaceTest
+from base_vyostest_shim import VyOSUnitTestSHIM
 
 from vyos.configsession import ConfigSessionError
 from vyos.utils.network import get_interface_config
@@ -73,7 +74,7 @@ class TunnelInterfaceTest(BasicInterfaceTest.TestCase):
             self.cli_set(self._base_path + [interface, 'remote', remote_ip4])
             self.cli_set(self._base_path + [interface, 'source-interface', source_if])
 
-            # Source interface can not be used with sit and gretap
+            # Source interface cannot be used with sit and gretap
             if encapsulation in ['sit', 'gretap']:
                 with self.assertRaises(ConfigSessionError):
                     self.cli_commit()
@@ -121,7 +122,7 @@ class TunnelInterfaceTest(BasicInterfaceTest.TestCase):
 
             # Configure Tunnel Source interface
             self.cli_set(self._base_path + [interface, 'source-interface', source_if])
-            # Source interface can not be used with ip6gretap
+            # Source interface cannot be used with ip6gretap
             if encapsulation in ['ip6gretap']:
                 with self.assertRaises(ConfigSessionError):
                     self.cli_commit()
@@ -345,7 +346,7 @@ class TunnelInterfaceTest(BasicInterfaceTest.TestCase):
             if 'remote' in tunnel_config:
                 self.cli_set(self._base_path + [tunnel, 'remote', tunnel_config['remote']])
 
-        # GRE key must be supplied when two or more tunnels are formed to the same desitnation
+        # GRE key must be supplied when two or more tunnels are formed to the same destination
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
         for tunnel, tunnel_config in tunnels.items():
@@ -403,11 +404,11 @@ class TunnelInterfaceTest(BasicInterfaceTest.TestCase):
 
         for dynamic_interface in ['l2tp0', 'ppp4220', 'sstpc0', 'ipoe654']:
             self.cli_set(self._base_path + [interface, 'source-interface', dynamic_interface])
-            # verify() - we can not source from dynamic interfaces
+            # verify() - we cannot source from dynamic interfaces
             with self.assertRaises(ConfigSessionError):
                 self.cli_commit()
         self.cli_set(self._base_path + [interface, 'source-interface', 'eth0'])
         self.cli_commit()
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,9 +19,9 @@ import unittest
 from base_vyostest_shim import VyOSUnitTestSHIM
 
 from vyos.ifconfig import Section
+from vyos.frrender import rip_daemon
 from vyos.utils.process import process_named_running
 
-PROCESS_NAME = 'ripd'
 acl_in = '198'
 acl_out = '199'
 prefix_list_in = 'foo-prefix'
@@ -35,7 +35,7 @@ class TestProtocolsRIP(VyOSUnitTestSHIM.TestCase):
     def setUpClass(cls):
         super(TestProtocolsRIP, cls).setUpClass()
         # Retrieve FRR daemon PID - it is not allowed to crash, thus PID must remain the same
-        cls.daemon_pid = process_named_running(PROCESS_NAME)
+        cls.daemon_pid = process_named_running(rip_daemon)
         # ensure we can also run this test on a live system - so lets clean
         # out the current configuration :)
         cls.cli_delete(cls, base_path)
@@ -66,8 +66,13 @@ class TestProtocolsRIP(VyOSUnitTestSHIM.TestCase):
         self.cli_delete(base_path)
         self.cli_commit()
 
+        frrconfig = self.getFRRconfig('router rip', stop_section='^exit')
+        self.assertNotIn(f'router rip', frrconfig)
+
         # check process health and continuity
-        self.assertEqual(self.daemon_pid, process_named_running(PROCESS_NAME))
+        self.assertEqual(self.daemon_pid, process_named_running(rip_daemon))
+        # always forward to base class
+        super().tearDown()
 
     def test_rip_01_parameters(self):
         distance = '40'
@@ -76,7 +81,7 @@ class TestProtocolsRIP(VyOSUnitTestSHIM.TestCase):
         interfaces = Section.interfaces('ethernet')
         neighbors = ['1.2.3.4', '1.2.3.5', '1.2.3.6']
         networks = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']
-        redistribute = ['bgp', 'connected', 'isis', 'kernel', 'ospf', 'static']
+        redistribute = ['bgp', 'connected', 'isis', 'kernel', 'nhrp', 'ospf', 'static']
         timer_garbage = '888'
         timer_timeout = '1000'
         timer_update = '90'
@@ -113,7 +118,7 @@ class TestProtocolsRIP(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
 
         # Verify FRR ripd configuration
-        frrconfig = self.getFRRconfig('router rip')
+        frrconfig = self.getFRRconfig('router rip', stop_section='^exit')
         self.assertIn(f'router rip', frrconfig)
         self.assertIn(f' distance {distance}', frrconfig)
         self.assertIn(f' default-information originate', frrconfig)
@@ -172,12 +177,12 @@ class TestProtocolsRIP(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
 
         # Verify FRR configuration
-        frrconfig = self.getFRRconfig('router rip')
+        frrconfig = self.getFRRconfig('router rip', stop_section='^exit')
         self.assertIn(f'version {tx_version}', frrconfig)
 
-        frrconfig = self.getFRRconfig(f'interface {interface}')
+        frrconfig = self.getFRRconfig(f'interface {interface}', stop_section='^exit')
         self.assertIn(f' ip rip receive version {rx_version}', frrconfig)
         self.assertIn(f' ip rip send version {tx_version}', frrconfig)
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,7 +18,7 @@ import unittest
 
 from base_vyostest_shim import VyOSUnitTestSHIM
 
-from vyos.utils.process import cmd
+from vyos.utils.process import run
 
 mark = '100'
 conn_mark = '555'
@@ -41,7 +41,7 @@ class TestPolicyRoute(VyOSUnitTestSHIM.TestCase):
 
         cls.cli_set(cls, ['interfaces', 'ethernet', interface, 'address', interface_ip])
         cls.cli_set(cls, ['protocols', 'static', 'table', table_id, 'route', '0.0.0.0/0', 'interface', interface])
-        
+
         cls.cli_set(cls, ['vrf', 'name', vrf, 'table', vrf_table_id])
 
     @classmethod
@@ -55,10 +55,13 @@ class TestPolicyRoute(VyOSUnitTestSHIM.TestCase):
     def tearDown(self):
         self.cli_delete(['policy', 'route'])
         self.cli_delete(['policy', 'route6'])
+        self.cli_delete(['firewall', 'group', 'domain-group', 'smoketest_domain'])
+        self.cli_delete(['system', 'static-host-mapping', 'host-name', 'pbr.example.com'])
         self.cli_commit()
 
         # Verify nftables cleanup
         nftables_search = [
+            ['set D_smoketest_domain'],
             ['set N_smoketest_network'],
             ['set N_smoketest_network1'],
             ['chain VYOS_PBR_smoketest']
@@ -72,17 +75,8 @@ class TestPolicyRoute(VyOSUnitTestSHIM.TestCase):
         ]
 
         self.verify_rules(ip_rule_search, inverse=True)
-
-    def verify_rules(self, rules_search, inverse=False):
-        rule_output = cmd('ip rule show')
-
-        for search in rules_search:
-            matched = False
-            for line in rule_output.split("\n"):
-                if all(item in line for item in search):
-                    matched = True
-                    break
-            self.assertTrue(not matched if inverse else matched, msg=search)
+        # always forward to base class
+        super().tearDown()
 
     def test_pbr_group(self):
         self.cli_set(['firewall', 'group', 'network-group', 'smoketest_network', 'network', '172.16.99.0/24'])
@@ -104,6 +98,46 @@ class TestPolicyRoute(VyOSUnitTestSHIM.TestCase):
         self.verify_nftables(nftables_search, 'ip vyos_mangle')
 
         self.cli_delete(['firewall'])
+
+    def test_pbr_domain_group(self):
+        domain_group = 'smoketest_domain'
+        domain_name = 'pbr.example.com'
+        domain_ip = '192.0.2.5'
+
+        self.cli_set(['system', 'static-host-mapping', 'host-name', domain_name, 'inet', domain_ip])
+        self.cli_commit()
+
+        self.cli_set(['firewall', 'group', 'domain-group', domain_group, 'address', domain_name])
+        self.cli_commit()
+
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '1', 'destination', 'group', 'domain-group', domain_group])
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '1', 'set', 'mark', mark])
+        self.cli_set(['policy', 'route', 'smoketest', 'interface', interface])
+
+        self.cli_commit()
+
+        result, code = self.wait_for_result(
+            lambda: run(
+                f'sudo nft get element ip vyos_mangle '
+                f'D_{domain_group} {{ {domain_ip} }}'
+            ),
+            0,
+            pause=1,
+            timeout=10
+        )
+        self.assertTrue(
+            result,
+            f'Expected {domain_ip} in D_{domain_group}, last nft exit code {code}'
+        )
+
+        nftables_search = [
+            [f'iifname "{interface}"', 'jump VYOS_PBR_UD_smoketest'],
+            [f'set D_{domain_group}'],
+            [f'elements = {{ {domain_ip} }}'],
+            [f'ip daddr @D_{domain_group}', 'meta mark set']
+        ]
+
+        self.verify_nftables(nftables_search, 'ip vyos_mangle')
 
     def test_pbr_mark(self):
         self.cli_set(['policy', 'route', 'smoketest', 'rule', '1', 'source', 'address', '172.16.20.10'])
@@ -317,5 +351,39 @@ class TestPolicyRoute(VyOSUnitTestSHIM.TestCase):
 
         self.verify_nftables(nftables6_search, 'ip6 vyos_mangle')
 
+    def test_geoip(self):
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '1', 'action', 'drop'])
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '1', 'source', 'geoip', 'country-code', 'se'])
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '1', 'source', 'geoip', 'country-code', 'gb'])
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '2', 'action', 'accept'])
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '2', 'source', 'geoip', 'country-code', 'de'])
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '2', 'source', 'geoip', 'country-code', 'fr'])
+        self.cli_set(['policy', 'route', 'smoketest', 'rule', '2', 'source', 'geoip', 'inverse-match'])
+
+        self.cli_set(['policy', 'route6', 'smoketest6', 'rule', '1', 'action', 'drop'])
+        self.cli_set(['policy', 'route6', 'smoketest6', 'rule', '1', 'source', 'geoip', 'country-code', 'se'])
+        self.cli_set(['policy', 'route6', 'smoketest6', 'rule', '1', 'source', 'geoip', 'country-code', 'gb'])
+        self.cli_set(['policy', 'route6', 'smoketest6', 'rule', '2', 'action', 'accept'])
+        self.cli_set(['policy', 'route6', 'smoketest6', 'rule', '2', 'source', 'geoip', 'country-code', 'de'])
+        self.cli_set(['policy', 'route6', 'smoketest6', 'rule', '2', 'source', 'geoip', 'country-code', 'fr'])
+        self.cli_set(['policy', 'route6', 'smoketest6', 'rule', '2', 'source', 'geoip', 'inverse-match'])
+
+        self.cli_commit()
+
+        nftables_search = [
+            ['ip saddr @GEOIP_CC_route_smoketest_1', 'drop'],
+            ['ip saddr != @GEOIP_CC_route_smoketest_2', 'accept'],
+        ]
+
+        # -t prevents 1000+ GeoIP elements being returned
+        self.verify_nftables(nftables_search, 'ip vyos_mangle', args='-t')
+
+        nftables_search = [
+            ['ip6 saddr @GEOIP_CC6_route6_smoketest6_1', 'drop'],
+            ['ip6 saddr != @GEOIP_CC6_route6_smoketest6_2', 'accept'],
+        ]
+
+        self.verify_nftables(nftables_search, 'ip6 vyos_mangle', args='-t')
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

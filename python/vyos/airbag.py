@@ -1,4 +1,4 @@
-# Copyright 2019-2020 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -15,19 +15,23 @@
 
 import sys
 from datetime import datetime
+from collections import deque
 
 from vyos import debug
 from vyos.logger import syslog
 from vyos.version import get_full_version_data
+from vyos.defaults import airbag_noteworthy_size
 
 
-def enable(log=True):
+def enable(log=False):
+    if 'nose2' in sys.modules:
+        return
     if log:
         _intercepting_logger()
     _intercepting_exceptions()
 
 
-_noteworthy = []
+_noteworthy = deque(maxlen=airbag_noteworthy_size)
 
 
 def noteworthy(msg):
@@ -72,7 +76,7 @@ def bug_report(dtype, value, trace):
     note = ''
     if _noteworthy:
         note = 'noteworthy:\n'
-        note += '\n'.join(_noteworthy)
+        note += '\n'.join(list(_noteworthy))
 
     information.update({
         'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),

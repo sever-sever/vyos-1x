@@ -1,4 +1,4 @@
-# Copyright 2021 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -17,7 +17,6 @@ from vyos.ifconfig.interface import Interface
 
 @Interface.register
 class WWANIf(Interface):
-    iftype = 'wwan'
     definition = {
         **Interface.definition,
         **{
@@ -26,6 +25,10 @@ class WWANIf(Interface):
             'eternal': 'wwan[0-9]+$',
         },
     }
+
+    def _create(self):
+        # we cannot create this interface as it is managed by the Kernel
+        pass
 
     def remove(self):
         """

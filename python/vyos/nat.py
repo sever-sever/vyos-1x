@@ -1,4 +1,4 @@
-# Copyright (C) 2022 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -37,7 +37,7 @@ def parse_nat_rule(rule_conf, rule_id, nat_type, ipv6=False):
                 operator = '!='
                 iiface = iiface[1:]
             output.append(f'iifname {operator} {{{iiface}}}')
-        else:
+        elif 'group' in rule_conf['inbound_interface']:
             iiface = rule_conf['inbound_interface']['group']
             if iiface[0] == '!':
                 operator = '!='
@@ -52,7 +52,7 @@ def parse_nat_rule(rule_conf, rule_id, nat_type, ipv6=False):
                 operator = '!='
                 oiface = oiface[1:]
             output.append(f'oifname {operator} {{{oiface}}}')
-        else:
+        elif 'group' in rule_conf['outbound_interface']:
             oiface = rule_conf['outbound_interface']['group']
             if oiface[0] == '!':
                 operator = '!='
@@ -80,7 +80,6 @@ def parse_nat_rule(rule_conf, rule_id, nat_type, ipv6=False):
             if redirect_port:
                 translation_output.append(f'to {redirect_port}')
         else:
-
             translation_prefix = nat_type[:1]
             translation_output = [f'{translation_prefix}nat']
 
@@ -199,7 +198,10 @@ def parse_nat_rule(rule_conf, rule_id, nat_type, ipv6=False):
                 if group_name[0] == '!':
                     operator = '!='
                     group_name = group_name[1:]
-                output.append(f'{ip_prefix} {prefix}addr {operator} @A_{group_name}')
+                if ipv6:
+                    output.append(f'{ip_prefix} {prefix}addr {operator} @A6_{group_name}')
+                else:
+                    output.append(f'{ip_prefix} {prefix}addr {operator} @A_{group_name}')
             # Generate firewall group domain-group
             elif 'domain_group' in group and not (ignore_type_addr and target == nat_type):
                 group_name = group['domain_group']
@@ -214,7 +216,10 @@ def parse_nat_rule(rule_conf, rule_id, nat_type, ipv6=False):
                 if group_name[0] == '!':
                     operator = '!='
                     group_name = group_name[1:]
-                output.append(f'{ip_prefix} {prefix}addr {operator} @N_{group_name}')
+                if ipv6:
+                    output.append(f'{ip_prefix} {prefix}addr {operator} @N6_{group_name}')
+                else:
+                    output.append(f'{ip_prefix} {prefix}addr {operator} @N_{group_name}')
             if 'mac_group' in group:
                 group_name = group['mac_group']
                 operator = ''
@@ -235,6 +240,13 @@ def parse_nat_rule(rule_conf, rule_id, nat_type, ipv6=False):
                     group_name = group_name[1:]
 
                 output.append(f'{proto} {prefix}port {operator} @P_{group_name}')
+
+        if 'fqdn' in side_conf:
+            fqdn = side_conf['fqdn']
+            operator = ''
+            if fqdn[0] == '!':
+                operator = '!='
+            output.append(f' ip {prefix}addr {operator} @FQDN_nat_{nat_type}_{rule_id}_{prefix}')
 
     output.append('counter')
 

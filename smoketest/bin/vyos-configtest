@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -23,8 +23,8 @@ import unittest
 from vyos.configsession import ConfigSession, ConfigSessionError
 from vyos import ConfigError
 
-config_dir = '/usr/libexec/vyos/tests/config'
-config_test_dir = '/usr/libexec/vyos/tests/config-tests'
+config_dir = '/usr/libexec/vyos/tests/configs'
+config_test_dir = f'{config_dir}/assert'
 save_config = '/tmp/vyos-configtest-save'
 
 class DynamicClassBase(unittest.TestCase):

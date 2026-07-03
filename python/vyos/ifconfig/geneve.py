@@ -1,4 +1,4 @@
-# Copyright 2019-2021 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -27,7 +27,6 @@ class GeneveIf(Interface):
     https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels/#geneve
     https://lwn.net/Articles/644938/
     """
-    iftype = 'geneve'
     definition = {
         **Interface.definition,
         **{
@@ -49,7 +48,7 @@ class GeneveIf(Interface):
             'parameters.ipv6.flowlabel'  : 'flowlabel',
         }
 
-        cmd = 'ip link add name {ifname} type {type} id {vni} remote {remote}'
+        cmd = 'ip link add name {ifname} type geneve id {vni} remote {remote} dstport {port}'
         for vyos_key, iproute2_key in mapping.items():
             # dict_search will return an empty dict "{}" for valueless nodes like
             # "parameters.nolearning" - thus we need to test the nodes existence

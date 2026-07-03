@@ -8,13 +8,13 @@ SUBSYSTEMS=="pci", IMPORT{builtin}="hwdb --subsystem=pci"
 SUBSYSTEMS=="usb", IMPORT{builtin}="usb_id", IMPORT{builtin}="hwdb --subsystem=usb"
 
 # /dev/serial/by-path/, /dev/serial/by-id/ for USB devices
-KERNEL!="ttyUSB[0-9]*", GOTO="serial_end"
+KERNEL!="ttyUSB[0-9]*|ttyACM[0-9]*", GOTO="serial_end"
 
 SUBSYSTEMS=="usb-serial", ENV{.ID_PORT}="$attr{port_number}"
 
 IMPORT{builtin}="path_id", IMPORT{builtin}="usb_id"
 
-# Change the name of the usb id to a "more" human redable format.
+# Change the name of the usb id to a "more" human readable format.
 #
 # - $env{ID_PATH} usually is a name like: "pci-0000:00:10.0-usb-0:2.3.3.4:1.0-port0" so we strip the "pci-*"
 #   portion and only use the usb part
@@ -22,7 +22,9 @@ IMPORT{builtin}="path_id", IMPORT{builtin}="usb_id"
 #   (tr -d -) does the replacement
 # - Replace the first group after ":" to represent the bus relation (sed -e 0,/:/s//b/) indicated by "b"
 # - Replace the next group after ":" to represent the port relation (sed -e 0,/:/s//p/) indicated by "p"
-ENV{ID_PATH}=="?*", ENV{.ID_PORT}=="",   PROGRAM="/bin/sh -c 'echo $env{ID_PATH} | cut -d- -f3- | tr -d - | sed -e 0,/:/s//b/ | sed -e 0,/:/s//p/'", SYMLINK+="serial/by-bus/$result"
-ENV{ID_PATH}=="?*", ENV{.ID_PORT}=="?*", PROGRAM="/bin/sh -c 'echo $env{ID_PATH} | cut -d- -f3- | tr -d - | sed -e 0,/:/s//b/ | sed -e 0,/:/s//p/'", SYMLINK+="serial/by-bus/$result"
+ENV{ID_PATH}=="?*", PROGRAM="/bin/sh -c 'echo $env{ID_PATH} | cut -d- -f3- | tr -d - | sed -e 0,/:/s//b/ | sed -e 0,/:/s//p/'", ENV{.BY_BUS}="%c"
+ENV{.BY_BUS}=="?*", ENV{.ID_PORT}=="",  SYMLINK+="serial/by-bus/%E{.BY_BUS}"
+ENV{.BY_BUS}=="?*", ENV{.ID_PORT}=="0", SYMLINK+="serial/by-bus/%E{.BY_BUS}"
+ENV{.BY_BUS}=="?*", ENV{.ID_PORT}=="?*", ENV{.ID_PORT}!="0", SYMLINK+="serial/by-bus/%E{.BY_BUS}p%E{.ID_PORT}"
 
 LABEL="serial_end"

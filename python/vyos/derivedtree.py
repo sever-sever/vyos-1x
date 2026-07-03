@@ -1,0 +1,76 @@
+# Copyright (C) VyOS Inc.
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this library.  If not, see <http://www.gnu.org/licenses/>.
+
+
+from vyos.referencetree import ReferenceTree
+from vyos.configtree import ConfigTree
+from vyos.configtree import ConfigTreeError
+from vyos.configtree import subtree_from_partial
+from vyos.configtree import mask_exclusive
+
+
+class DerivedTreeError(Exception):
+    """Error to be raised by functions of derivedtree"""
+
+
+def subtree_from_list_of_partial_paths(
+    ctree: ConfigTree,
+    paths: list[list[str]],
+    accumulator: ConfigTree = None,
+    reference_tree: ReferenceTree = None,
+) -> ConfigTree:
+    """Return the union of subtrees of the ConfigTree argument matching each
+    of the 'partial' paths. A partial path is one that may or may not
+    contain intervening tag node values, in which case it will match for all
+    values that apply.
+
+    An existing subtree may be passed as the initial value of accumulator.
+
+    For testing or use outside of the canonical environment, an instance of
+    the ReferenceTree may be passed from an alternative cache location.
+    """
+    if reference_tree is None:
+        reference_tree = ReferenceTree()
+
+    if accumulator is not None:
+        if not isinstance(accumulator, ConfigTree):
+            raise TypeError("Argument 'accumulator' must be an instance of ConfigTree")
+    else:
+        accumulator = ConfigTree('')
+
+    errors = []
+    for path in paths:
+        try:
+            accumulator = subtree_from_partial(ctree, path, reference_tree, accumulator)
+        except ConfigTreeError as e:
+            errors.append(str(e))
+            continue
+
+    if errors:
+        raise DerivedTreeError(f'Nonsensical paths: {errors}')
+
+    return accumulator
+
+
+def apply_exclusion_list(
+    config_tree: ConfigTree, exclusion_list: list[list[str]]
+) -> ConfigTree:
+    mask_ex = subtree_from_list_of_partial_paths(config_tree, exclusion_list)
+    try:
+        masked = mask_exclusive(config_tree, mask_ex)
+    except ConfigTreeError as e:
+        raise DerivedTreeError(str(e)) from e
+
+    return masked

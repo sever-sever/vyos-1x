@@ -3,22 +3,14 @@
 # Turn off Debian default for %sudo
 sed -i -e '/^%sudo/d' /etc/sudoers || true
 
-# Add minion user for salt-minion
-if ! grep -q '^minion' /etc/passwd; then
-    adduser --quiet --firstuid 100 --system --disabled-login --ingroup vyattacfg \
-        --gecos "salt minion user" --shell /bin/vbash minion
-    adduser --quiet minion frrvty
-    adduser --quiet minion sudo
-    adduser --quiet minion adm
-    adduser --quiet minion dip
-    adduser --quiet minion disk
-    adduser --quiet minion users
-    adduser --quiet minion frr
-fi
-
 # OpenVPN should get its own user
 if ! grep -q '^openvpn' /etc/passwd; then
     adduser --quiet --firstuid 100 --system --group --shell /usr/sbin/nologin openvpn
+fi
+
+# node_exporter should get its own user
+if ! grep -q '^node_exporter' /etc/passwd; then
+    adduser --quiet --firstuid 100 --system --group --shell /bin/false node_exporter
 fi
 
 # We need to have a group for RADIUS service users to use it inside PAM rules
@@ -44,6 +36,10 @@ fi
 if [[ -e /usr/share/pam-configs/tacplus ]]; then
     rm /usr/share/pam-configs/tacplus
 fi
+
+# Disable pam_nologin.so behavior for regular users
+sed -i '/^auth[[:space:]]\+requisite[[:space:]]\+pam_nologin\.so$/s/^/#/' /etc/pam.d/login
+sed -i '/^account[[:space:]]\+required[[:space:]]\+pam_nologin\.so$/s/^/#/' /etc/pam.d/sshd
 
 # Add TACACS system users required for TACACS based system authentication
 if ! grep -q '^tacacs' /etc/passwd; then
@@ -72,6 +68,7 @@ if ! grep -q '^tacacs' /etc/passwd; then
             adduser --quiet tacacs${level} disk
             adduser --quiet tacacs${level} frr
             adduser --quiet tacacs${level} _kea
+            adduser --quiet tacacs${level} vpp
         fi
         level=$(( level+1 ))
     done 2>&1 | grep -v "User tacacs${level} already exists"
@@ -104,6 +101,7 @@ if ! grep -q '^radius_priv_user' /etc/passwd; then
     adduser --quiet radius_priv_user users
     adduser --quiet radius_priv_user frr
     adduser --quiet radius_priv_user _kea
+    adduser --quiet radius_priv_user vpp
 fi
 
 # add hostsd group for vyos-hostsd
@@ -144,6 +142,11 @@ chown -R root:vyattacfg /opt/vyatta/etc/config
 chmod -R 775 /opt/vyatta/etc/config
 mkdir -p /opt/vyatta/etc/logrotate
 mkdir -p /opt/vyatta/etc/netdevice.d
+
+# T8326: GeoIP permissions
+mkdir -p /var/cache/vyos /usr/share/vyos-geoip
+chown -R root:vyattacfg /var/cache/vyos /usr/share/vyos-geoip
+chmod -R 775 /var/cache/vyos /usr/share/vyos-geoip
 
 touch /etc/environment
 
@@ -215,12 +218,8 @@ fi
 
 # Remove unwanted daemon files from /etc
 # conntackd
-# pmacct
-# fastnetmon
 # ntp
 DELETE="/etc/logrotate.d/conntrackd.distrib /etc/init.d/conntrackd /etc/default/conntrackd
-        /etc/default/pmacctd /etc/pmacct
-        /etc/networks_list /etc/networks_whitelist /etc/fastnetmon.conf
         /etc/ntp.conf /etc/default/ssh /etc/avahi/avahi-daemon.conf /etc/avahi/hosts
         /etc/powerdns /etc/default/pdns-recursor
         /etc/ppp/ip-up.d/0000usepeerdns /etc/ppp/ip-down.d/0000usepeerdns"
@@ -244,6 +243,9 @@ fi
 # Enable Cloud-init pre-configuration service
 systemctl enable vyos-config-cloud-init.service
 
+# Enable Podman API
+systemctl enable podman.service
+
 # Generate API GraphQL schema
 /usr/libexec/vyos/services/api/graphql/generate/generate_schema.py
 
@@ -259,3 +261,17 @@ fi
 
 # T4287 - as we have a non-signed kernel use the upstream wireless reulatory database
 update-alternatives --set regulatory.db /lib/firmware/regulatory.db-upstream
+
+# Restart vyos-configd to apply changes in Python scripts/templates
+if systemctl is-active --quiet vyos-configd; then
+    systemctl restart vyos-configd
+fi
+# Restart vyos-domain-resolver if running
+if systemctl is-active --quiet vyos-domain-resolver; then
+    systemctl restart vyos-domain-resolver
+fi
+
+# Restart vyos-netlinkd if running
+if systemctl is-active --quiet vyos-netlinkd; then
+    systemctl restart vyos-netlinkd
+fi

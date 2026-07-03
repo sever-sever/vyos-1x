@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -29,8 +29,10 @@ from vyos.accel_ppp_util import verify_accel_ppp_name_servers
 from vyos.accel_ppp_util import verify_accel_ppp_wins_servers
 from vyos.accel_ppp_util import verify_accel_ppp_ip_pool
 from vyos.accel_ppp_util import verify_accel_ppp_authentication
+from vyos.vpp.utils import cli_ifaces_list
 from vyos import ConfigError
 from vyos import airbag
+
 airbag.enable()
 
 
@@ -52,9 +54,14 @@ def get_config(config=None):
 
     if dict_search('client_ip_pool', ipoe):
         # Multiple named pools require ordered values T5099
-        ipoe['ordered_named_pools'] = get_pools_in_order(dict_search('client_ip_pool', ipoe))
+        ipoe['ordered_named_pools'] = get_pools_in_order(
+            dict_search('client_ip_pool', ipoe)
+        )
 
     ipoe['server_type'] = 'ipoe'
+
+    ipoe['vpp_ifaces'] = cli_ifaces_list(conf)
+
     return ipoe
 
 
@@ -66,10 +73,37 @@ def verify(ipoe):
         raise ConfigError('No IPoE interface configured')
 
     for interface, iface_config in ipoe['interface'].items():
-        verify_interface_exists(interface, warning_only=True)
+        if ipoe.get('vpp_ifaces'):
+            base_interface = interface.split('.')[0]
+            if base_interface in ipoe['vpp_ifaces']:
+                raise ConfigError(
+                    f'{interface} is a VPP interface and cannot be used for IPoE!'
+                )
+
+        verify_interface_exists(ipoe, interface, warning_only=True)
         if 'client_subnet' in iface_config and 'vlan' in iface_config:
-            raise ConfigError('Option "client-subnet" and "vlan" are mutually exclusive, '
-                              'use "client-ip-pool" instead!')
+            raise ConfigError(
+                'Options "client-subnet" and "vlan" are mutually exclusive, '
+                'use "client-ip-pool" instead!'
+            )
+        if 'vlan_mon' in iface_config and 'vlan' not in iface_config:
+            raise ConfigError('Option "vlan-mon" requires "vlan" to be set!')
+
+        if 'lua_username' in iface_config:
+            if 'lua_file' not in ipoe:
+                raise ConfigError(
+                    'Option "lua-username" requires "lua-file" to be set!'
+                )
+            if dict_search('authentication.mode', ipoe) != 'radius':
+                raise ConfigError(
+                    'Can configure username with Lua script only for RADIUS authentication'
+                )
+
+        if dict_search('external_dhcp.dhcp_relay', iface_config):
+            if not dict_search('external_dhcp.giaddr', iface_config):
+                raise ConfigError(
+                    f'"external-dhcp dhcp-relay" requires "giaddr" to be set for interface {interface}'
+                )
 
     verify_accel_ppp_authentication(ipoe, local_users=False)
     verify_accel_ppp_ip_pool(ipoe)
@@ -86,14 +120,15 @@ def generate(ipoe):
     render(ipoe_conf, 'accel-ppp/ipoe.config.j2', ipoe)
 
     if dict_search('authentication.mode', ipoe) == 'local':
-        render(ipoe_chap_secrets, 'accel-ppp/chap-secrets.ipoe.j2',
-               ipoe, permission=0o640)
+        render(
+            ipoe_chap_secrets, 'accel-ppp/chap-secrets.ipoe.j2', ipoe, permission=0o640
+        )
     return None
 
 
 def apply(ipoe):
     systemd_service = 'accel-ppp@ipoe.service'
-    if ipoe == None:
+    if ipoe is None:
         call(f'systemctl stop {systemd_service}')
         for file in [ipoe_conf, ipoe_chap_secrets]:
             if os.path.exists(file):
@@ -101,7 +136,10 @@ def apply(ipoe):
 
         return None
 
-    call(f'systemctl reload-or-restart {systemd_service}')
+    # Accel-pppd does not do soft-reload correctly.
+    # Most of the changes require restarting the service
+    call(f'systemctl restart {systemd_service}')
+
 
 if __name__ == '__main__':
     try:

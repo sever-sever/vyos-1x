@@ -1,4 +1,4 @@
-# Copyright 2022 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -17,7 +17,6 @@ from vyos.ifconfig.interface import Interface
 
 @Interface.register
 class SSTPCIf(Interface):
-    iftype = 'sstpc'
     definition = {
         **Interface.definition,
         **{
@@ -28,11 +27,11 @@ class SSTPCIf(Interface):
     }
 
     def _create(self):
-        # we can not create this interface as it is managed outside
+        # we cannot create this interface as it is managed outside
         pass
 
     def _delete(self):
-        # we can not create this interface as it is managed outside
+        # we cannot create this interface as it is managed outside
         pass
 
     def get_mac(self):

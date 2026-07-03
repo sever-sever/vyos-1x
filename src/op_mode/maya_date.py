@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (c) 2013, 2018 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -168,7 +168,7 @@ class MayaDate(object):
 
         """ The start date is not the beginning of both cycles,
             it's 4 Ajaw. So we need to add 4 to the 13 days cycle day,
-            and substract 1 from the 20 day cycle to get correct result.
+            and subtract 1 from the 20 day cycle to get correct result.
         """
         tzolkin_13 = (days + 4) % 13
         tzolkin_20 = (days - 1) % 20
@@ -181,7 +181,7 @@ class MayaDate(object):
         """ Returns haab date string.
 
             The time start on 8 Kumk'u rather than 0 Pop, which is
-            17 days before the new haab, so we need to substract 17
+            17 days before the new haab, so we need to subtract 17
             from the current date to get correct result.
         """
         days = self.days

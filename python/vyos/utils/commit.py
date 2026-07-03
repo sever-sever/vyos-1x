@@ -1,4 +1,4 @@
-# Copyright 2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -13,8 +13,70 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library.  If not, see <http://www.gnu.org/licenses/>.
 
+# pylint: disable=import-outside-toplevel
+
+from typing import IO
+
+
+def _commit_lock_busy(lock_path: str) -> bool:
+    """Return True if another process holds a POSIX advisory lock on lock_path.
+
+    Uses libc lockf(F_TEST): never acquires or releases a lock (no observer window
+    where this code holds LOCK_EX). Compatible with locks taken via fcntl.lockf /
+    fcntl F_SETLK on Linux.
+    """
+    import ctypes
+    import errno
+    import os
+
+    libc = ctypes.CDLL('libc.so.6', use_errno=True)
+    lockf_fn = libc.lockf
+    lockf_fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    lockf_fn.restype = ctypes.c_int
+
+    # Defined in glibc <unistd.h> / <fcntl.h> as F_TEST.
+    _F_TEST = 3
+
+    try:
+        fd = os.open(lock_path, os.O_RDONLY)
+    except FileNotFoundError:
+        # Lost a race with unlink or commit teardown.
+        return False
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        ctypes.set_errno(0)
+        ret = lockf_fn(fd, _F_TEST, 0)
+        err = ctypes.get_errno()
+        if ret == 0:
+            return False
+        if err in (errno.EACCES, errno.EAGAIN):
+            return True
+        raise OSError(err, os.strerror(err), lock_path)
+    finally:
+        os.close(fd)
+
+def commit_in_progress2():
+    """
+    Modern implementation of commit_in_progress() which is O(1) instead of O(n)
+
+    The reason not everything is moved to this new implementation yet is to
+    give it heavy testing in vyos-netlinkd first.
+    """
+    # Query advisory locks without acquiring them (see _commit_lock_busy).
+    # Requires read access to the lock file.
+    # If there is no read access otherwise os.open raises PermissionError.
+
+    from pathlib import Path
+    from vyos.defaults import commit_lock
+
+    lock_path = Path(commit_lock)
+    if not lock_path.exists():
+        return False
+
+    return _commit_lock_busy(str(lock_path))
+
 def commit_in_progress():
-    """ Not to be used in normal op mode scripts! """
+    """Not to be used in normal op mode scripts!"""
 
     # The CStore backend locks the config by opening a file
     # The file is not removed after commit, so just checking
@@ -36,7 +98,9 @@ def commit_in_progress():
     from vyos.defaults import commit_lock
 
     if getuser() != 'root':
-        raise OSError('This functions needs to be run as root to return correct results!')
+        raise OSError(
+            'This functions needs to be run as root to return correct results!'
+        )
 
     for proc in process_iter():
         try:
@@ -45,7 +109,7 @@ def commit_in_progress():
                 for f in files:
                     if f.path == commit_lock:
                         return True
-        except NoSuchProcess as err:
+        except NoSuchProcess:
             # Process died before we could examine it
             pass
     # Default case
@@ -53,8 +117,71 @@ def commit_in_progress():
 
 
 def wait_for_commit_lock():
-    """ Not to be used in normal op mode scripts! """
+    """Not to be used in normal op mode scripts!"""
     from time import sleep
+
     # Very synchronous approach to multiprocessing
     while commit_in_progress():
         sleep(1)
+
+
+# For transitional compatibility with the legacy commit locking mechanism,
+# we require a lockf/fcntl (POSIX-type) lock, hence the following in place
+# of vyos.utils.locking
+
+
+def acquire_commit_lock_file() -> tuple[IO, str]:
+    import fcntl
+    from pathlib import Path
+    from vyos.defaults import commit_lock
+
+    try:
+        # pylint: disable=consider-using-with
+        lock_fd = Path(commit_lock).open('w')
+    except IOError as e:
+        out = f'Critical error opening commit lock file {e}'
+        return None, out
+
+    try:
+        fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_fd, ''
+    except IOError:
+        out = 'Configuration system locked by another commit in progress'
+        lock_fd.close()
+        return None, out
+
+
+def release_commit_lock_file(file_descr):
+    import fcntl
+
+    if file_descr is None:
+        return
+    fcntl.lockf(file_descr, fcntl.LOCK_UN)
+    file_descr.close()
+
+
+def call_commit_hooks(which: str):
+    import re
+    import os
+    from pathlib import Path
+    from vyos.defaults import commit_hooks
+    from vyos.utils.process import rc_cmd
+
+    if which not in list(commit_hooks):
+        raise ValueError(f'no entry {which} in commit_hooks')
+
+    hook_dir = commit_hooks[which]
+    file_list = list(Path(hook_dir).glob('*'))
+    regex = re.compile('^[a-zA-Z0-9._-]+$')
+    hook_list = sorted([str(f) for f in file_list if regex.match(f.name)])
+    err = False
+    out = ''
+    for runf in hook_list:
+        try:
+            e, o = rc_cmd(runf)
+        except FileNotFoundError:
+            continue
+        err = err | bool(e)
+        out = out + o
+
+    return out, int(err)

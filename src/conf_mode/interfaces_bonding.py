@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,29 +19,34 @@ from sys import exit
 from vyos.config import Config
 from vyos.configdict import get_interface_dict
 from vyos.configdict import is_node_changed
+from vyos.configdict import is_vrf_changed
 from vyos.configdict import leaf_node_changed
 from vyos.configdict import is_member
 from vyos.configdict import is_source_interface
 from vyos.configverify import verify_address
 from vyos.configverify import verify_bridge_delete
 from vyos.configverify import verify_dhcpv6
+from vyos.configverify import verify_eapol
 from vyos.configverify import verify_mirror_redirect
 from vyos.configverify import verify_mtu_ipv6
 from vyos.configverify import verify_vlan_config
 from vyos.configverify import verify_vrf
+from vyos.ethtool import Ethtool
+from vyos.frrender import FRRender
+from vyos.frrender import get_frrender_dict
 from vyos.ifconfig import BondIf
 from vyos.ifconfig.ethernet import EthernetIf
-from vyos.ifconfig import Section
-from vyos.template import render_to_string
 from vyos.utils.assertion import assert_mac
 from vyos.utils.dict import dict_search
 from vyos.utils.dict import dict_to_paths_values
 from vyos.utils.network import interface_exists
+from vyos.utils.process import is_systemd_service_running
 from vyos.configdict import has_address_configured
 from vyos.configdict import has_vrf_configured
-from vyos.configdep import set_dependents, call_dependents
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
+from vyos.vpp.utils import cli_ifaces_list
 from vyos import ConfigError
-from vyos import frr
 from vyos import airbag
 airbag.enable()
 
@@ -65,7 +70,7 @@ def get_bond_mode(mode):
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least the
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least the
     interface name will be added or a deleted flag
     """
     if config:
@@ -73,9 +78,9 @@ def get_config(config=None):
     else:
         conf = Config()
     base = ['interfaces', 'bonding']
-    ifname, bond = get_interface_dict(conf, base)
+    ifname, bond = get_interface_dict(conf, base, with_pki=True)
 
-    # To make our own life easier transfor the list of member interfaces
+    # To make our own life easier transform the list of member interfaces
     # into a dictionary - we will use this to add additional information
     # later on for each member
     if 'member' in bond and 'interface' in bond['member']:
@@ -86,10 +91,13 @@ def get_config(config=None):
         bond['mode'] = get_bond_mode(bond['mode'])
 
     tmp = is_node_changed(conf, base + [ifname, 'mode'])
-    if tmp: bond['shutdown_required'] = {}
+    if tmp: bond.update({'shutdown_required' : {}})
 
     tmp = is_node_changed(conf, base + [ifname, 'lacp-rate'])
-    if tmp: bond['shutdown_required'] = {}
+    if tmp: bond.update({'shutdown_required' : {}})
+
+    tmp = is_node_changed(conf, base + [ifname, 'evpn'])
+    if tmp: bond.update({'frr_dict' : get_frrender_dict(conf)})
 
     # determine which members have been removed
     interfaces_removed = leaf_node_changed(conf, base + [ifname, 'member', 'interface'])
@@ -98,7 +106,6 @@ def get_config(config=None):
     conf.set_level(['interfaces'])
 
     if interfaces_removed:
-        bond['shutdown_required'] = {}
         if 'member' not in bond:
             bond['member'] = {}
 
@@ -108,8 +115,7 @@ def get_config(config=None):
             # ethernet commit again in apply function
             # to apply options under ethernet section
             set_dependents('ethernet', conf, interface)
-            section = Section.section(interface) # this will be 'ethernet' for 'eth0'
-            if conf.exists([section, interface, 'disable']):
+            if conf.exists(['ethernet', interface, 'disable']):
                 tmp[interface] = {'disable': ''}
             else:
                 tmp[interface] = {}
@@ -120,9 +126,8 @@ def get_config(config=None):
     # Restore existing config level
     conf.set_level(old_level)
 
-    if dict_search('member.interface', bond):
-        for interface, interface_config in bond['member']['interface'].items():
-
+    if dict_search('member.interface', bond) is not None:
+        for interface in bond['member']['interface']:
             interface_ethernet_config = conf.get_config_dict(
                 ['interfaces', 'ethernet', interface],
                 key_mangling=('-', '_'),
@@ -131,44 +136,49 @@ def get_config(config=None):
                 with_defaults=False,
                 with_recursive_defaults=False)
 
-            interface_config['config_paths'] = dict_to_paths_values(interface_ethernet_config)
+            bond['member']['interface'][interface].update({'config_paths' :
+                dict_to_paths_values(interface_ethernet_config)})
 
             # Check if member interface is a new member
             if not conf.exists_effective(base + [ifname, 'member', 'interface', interface]):
-                bond['shutdown_required'] = {}
-                interface_config['new_added'] = {}
+                bond['member']['interface'][interface].update({'new_added' : {}})
 
-            # Check if member interface is disabled
-            conf.set_level(['interfaces'])
-
-            section = Section.section(interface) # this will be 'ethernet' for 'eth0'
-            if conf.exists([section, interface, 'disable']):
-                interface_config['disable'] = ''
-
-            conf.set_level(old_level)
+            if 'disable' in interface_ethernet_config:
+                bond['member']['interface'][interface].update({'disable': ''})
 
             # Check if member interface is already member of another bridge
             tmp = is_member(conf, interface, 'bridge')
-            if tmp: interface_config['is_bridge_member'] = tmp
+            if tmp: bond['member']['interface'][interface].update({'is_bridge_member' : tmp})
 
             # Check if member interface is already member of a bond
             tmp = is_member(conf, interface, 'bonding')
-            for tmp in is_member(conf, interface, 'bonding'):
-                if bond['ifname'] == tmp:
-                    continue
-                interface_config['is_bond_member'] = tmp
+            if ifname in tmp:
+                del tmp[ifname]
+            if tmp: bond['member']['interface'][interface].update({'is_bond_member' : tmp})
 
             # Check if member interface is used as source-interface on another interface
             tmp = is_source_interface(conf, interface)
-            if tmp: interface_config['is_source_interface'] = tmp
+            if tmp: bond['member']['interface'][interface].update({'is_source_interface' : tmp})
 
             # bond members must not have an assigned address
             tmp = has_address_configured(conf, interface)
-            if tmp: interface_config['has_address'] = {}
+            if tmp: bond['member']['interface'][interface].update({'has_address' : ''})
 
             # bond members must not have a VRF attached
             tmp = has_vrf_configured(conf, interface)
-            if tmp: interface_config['has_vrf'] = {}
+            if tmp: bond['member']['interface'][interface].update({'has_vrf' : ''})
+
+    # Protocols static arp dependency
+    if 'static_arp' in bond:
+        set_dependents('static_arp', conf)
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        bond.update({'vrf_changed': {}})
+        set_dependents('firewall', conf)
+
+    bond['vpp_ifaces'] = cli_ifaces_list(conf)
+
     return bond
 
 
@@ -196,6 +206,7 @@ def verify(bond):
     verify_dhcpv6(bond)
     verify_vrf(bond)
     verify_mirror_redirect(bond)
+    verify_eapol(bond)
 
     # use common function to verify VLAN configuration
     verify_vlan_config(bond)
@@ -203,10 +214,10 @@ def verify(bond):
     bond_name = bond['ifname']
     if dict_search('member.interface', bond):
         for interface, interface_config in bond['member']['interface'].items():
-            error_msg = f'Can not add interface "{interface}" to bond, '
+            error_msg = f'Cannot add interface "{interface}" to bond, '
 
             if interface == 'lo':
-                raise ConfigError('Loopback interface "lo" can not be added to a bond')
+                raise ConfigError('Loopback interface "lo" cannot be added to a bond')
 
             if not interface_exists(interface):
                 raise ConfigError(error_msg + 'it does not exist!')
@@ -237,6 +248,27 @@ def verify(bond):
                         continue
                     raise ConfigError(error_msg + f'it has a "{option_path.replace(".", " ")}" assigned!')
 
+            iface_base = interface.split('.')[0]  # get the parent interface name
+            if iface_base in bond['vpp_ifaces']:
+                raise ConfigError(
+                    error_msg + 'it is already configured as VPP interface'
+                )
+
+            if mtu := bond.get('mtu'):
+                mtu = int(mtu)
+                max_mtu = int(EthernetIf(interface).get_max_mtu())
+                min_mtu = int(EthernetIf(interface).get_min_mtu())
+                if mtu > max_mtu:
+                    raise ConfigError('Configured MTU is greater then member '\
+                                      f'interface "{interface}" maximum of {max_mtu}!')
+                if mtu < min_mtu:
+                    raise ConfigError('Configured MTU is less then member '\
+                                      f'interface "{interface}" minimum of {min_mtu}!')
+
+            # not all ethernet drivers support interface bonding
+            if not Ethtool(interface).check_bonding():
+                raise ConfigError(error_msg + 'driver is not supported!')
+
     if 'primary' in bond:
         if bond['primary'] not in bond['member']['interface']:
             raise ConfigError(f'Primary interface of bond "{bond_name}" must be a member interface')
@@ -258,37 +290,30 @@ def verify(bond):
     return None
 
 def generate(bond):
-    bond['frr_zebra_config'] = ''
-    if 'deleted' not in bond:
-        bond['frr_zebra_config'] = render_to_string('frr/evpn.mh.frr.j2', bond)
+    if 'frr_dict' in bond and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().generate(bond['frr_dict'])
     return None
 
 def apply(bond):
-    ifname = bond['ifname']
-    b = BondIf(ifname)
+    if 'frr_dict' in bond and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().apply()
+
+    b = BondIf(bond['ifname'])
     if 'deleted' in bond:
-        # delete interface
         b.remove()
     else:
         b.update(bond)
 
-    if dict_search('member.interface_remove', bond):
+    if (
+        dict_search('member.interface_remove', bond)
+        or 'static_arp' in bond
+        or 'vrf_changed' in bond
+    ):
         try:
             call_dependents()
         except ConfigError:
             raise ConfigError('Error in updating ethernet interface '
                               'after deleting it from bond')
-
-    zebra_daemon = 'zebra'
-    # Save original configuration prior to starting any commit actions
-    frr_cfg = frr.FRRConfig()
-
-    # The route-map used for the FIB (zebra) is part of the zebra daemon
-    frr_cfg.load_configuration(zebra_daemon)
-    frr_cfg.modify_section(f'^interface {ifname}', stop_pattern='^exit', remove_stop_mark=True)
-    if 'frr_zebra_config' in bond:
-        frr_cfg.add_before(frr.default_add_before, bond['frr_zebra_config'])
-    frr_cfg.commit_configuration(zebra_daemon)
 
     return None
 

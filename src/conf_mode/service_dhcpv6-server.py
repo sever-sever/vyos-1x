@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -16,42 +16,94 @@
 
 import os
 
+from sys import exit
+from sys import argv
+
 from glob import glob
 from ipaddress import ip_address
 from ipaddress import ip_network
-from sys import exit
 
 from vyos.config import Config
+from vyos.kea import kea_test_config
 from vyos.template import render
 from vyos.utils.process import call
 from vyos.utils.file import chmod_775
-from vyos.utils.file import chown
 from vyos.utils.file import makedir
 from vyos.utils.file import write_file
 from vyos.utils.dict import dict_search
 from vyos.utils.network import is_subnet_connected
+from vyos.utils.permission import chown
 from vyos import ConfigError
 from vyos import airbag
+
 airbag.enable()
 
-config_file = '/run/kea/kea-dhcp6.conf'
-ctrl_socket = '/run/kea/dhcp6-ctrl-socket'
-lease_file = '/config/dhcp/dhcp6-leases.csv'
-lease_file_glob = '/config/dhcp/dhcp6-leases*'
+
+config_file = ''
+ctrl_socket = ''
+lease_file = ''
+lease_file_glob = ''
+
 user_group = '_kea'
+
+
+def _override_for_vrf(vrf_name):
+    """
+    This function is intended to override some of the global vars
+    """
+    global ctrl_socket, config_file, lease_file, lease_file_glob
+
+    config_file = f'/run/kea/kea-{vrf_name}-dhcp6.conf'
+    ctrl_socket = f'/run/kea/dhcp6-{vrf_name}-ctrl-socket'
+    lease_file = f'/config/dhcp/dhcp6-{vrf_name}-leases.csv'
+    lease_file_glob = f'/config/dhcp/dhcp6-{vrf_name}-leases*'
+
+
+def _reset_vars():
+    """
+    This function is intended to reset global vars when vrf is not enabled
+    """
+    global ctrl_socket, config_file, lease_file, lease_file_glob
+
+    config_file = '/run/kea/kea-dhcp6.conf'
+    ctrl_socket = '/run/kea/dhcp6-ctrl-socket'
+    lease_file = '/config/dhcp/dhcp6-leases.csv'
+    lease_file_glob = '/config/dhcp/dhcp6-leases*'
+
 
 def get_config(config=None):
     if config:
         conf = config
     else:
         conf = Config()
-    base = ['service', 'dhcpv6-server']
+
+    # if running in vrf, set base differently
+    if argv and len(argv) > 1:
+        vrf_name = argv[1]
+        base = ['vrf', 'name', vrf_name, 'service', 'dhcpv6-server']
+
+        # vrf is defined, override other vars aswell
+        _override_for_vrf(vrf_name)
+    else:
+        base = ['service', 'dhcpv6-server']
+
+        # vrf is not defined reset vars
+        _reset_vars()
     if not conf.exists(base):
         return None
 
-    dhcpv6 = conf.get_config_dict(base, key_mangling=('-', '_'),
-                                  get_first_key=True,
-                                  no_tag_node_value_mangle=True)
+    dhcpv6 = conf.get_config_dict(
+        base,
+        key_mangling=('-', '_'),
+        get_first_key=True,
+        no_tag_node_value_mangle=True,
+        with_recursive_defaults=True,
+    )
+
+    # add vrf context if present
+    if argv and len(argv) > 1:
+        dhcpv6['vrf_context'] = argv[1]
+
     return dhcpv6
 
 def verify(dhcpv6):
@@ -144,15 +196,20 @@ def verify(dhcpv6):
                     if 'prefix_length' not in prefix_config:
                         raise ConfigError('Length of delegated IPv6 prefix must be configured')
 
-                    if prefix_config['prefix_length'] > prefix_config['delegated_length']:
+                    prefix_len = prefix_config['prefix_length']
+                    prefix_obj = None
+
+                    if prefix_len > prefix_config['delegated_length']:
                         raise ConfigError('Length of delegated IPv6 prefix must be within parent prefix')
+
+                    try:
+                        prefix_obj = ip_network(f'{prefix}/{prefix_len}')
+                    except ValueError:
+                        raise ConfigError('Invalid prefix-length for delegated prefix')
 
                     if 'excluded_prefix' in prefix_config:
                         if 'excluded_prefix_length' not in prefix_config:
                             raise ConfigError('Length of excluded IPv6 prefix must be configured')
-
-                        prefix_len = prefix_config['prefix_length']
-                        prefix_obj = ip_network(f'{prefix}/{prefix_len}')
 
                         excluded_prefix = prefix_config['excluded_prefix']
                         excluded_len = prefix_config['excluded_prefix_length']
@@ -166,16 +223,34 @@ def verify(dhcpv6):
 
             # Static mappings don't require anything (but check if IP is in subnet if it's set)
             if 'static_mapping' in subnet_config:
+                reserved_addresses = []
+                reserved_prefixes = []
                 for mapping, mapping_config in subnet_config['static_mapping'].items():
                     if 'ipv6_address' in mapping_config:
                         # Static address must be in subnet
-                        if ip_address(mapping_config['ipv6_address']) not in ip_network(subnet):
-                            raise ConfigError(f'static-mapping address for mapping "{mapping}" is not in subnet "{subnet}"!')
+                        for address in mapping_config['ipv6_address']:
+                            if ip_address(address) not in ip_network(subnet):
+                                raise ConfigError(f'static-mapping address for mapping "{mapping}" is not in subnet "{subnet}"!')
+                            if address in reserved_addresses:
+                                raise ConfigError(f'Duplicate IPv6 address "{address}" in static-mapping "{mapping}" '
+                                                  f'within shared-network "{network}", subnet "{subnet}"!')
+                            reserved_addresses.append(address)
 
-                        if ('mac' not in mapping_config and 'duid' not in mapping_config) or \
-                            ('mac' in mapping_config and 'duid' in mapping_config):
-                            raise ConfigError(f'Either MAC address or Client identifier (DUID) is required for '
-                                              f'static mapping "{mapping}" within shared-network "{network}, {subnet}"!')
+                    if 'ipv6_prefix' in mapping_config:
+                        for prefix in mapping_config['ipv6_prefix']:
+                            if prefix in reserved_prefixes:
+                                raise ConfigError(f'Duplicate IPv6 prefix "{prefix}" in static-mapping "{mapping}" '
+                                                  f'within shared-network "{network}", subnet "{subnet}"!')
+                            reserved_prefixes.append(prefix)
+
+                    if ('ipv6_address' not in mapping_config and 'ipv6_prefix' not in mapping_config):
+                        raise ConfigError('Either IPv6 address or IPv6 prefix must be set for static mapping '
+                                          f'"{mapping}" within shared-network "{network}, {subnet}"!')
+
+                    if ('mac' not in mapping_config and 'duid' not in mapping_config) or \
+                        ('mac' in mapping_config and 'duid' in mapping_config):
+                        raise ConfigError('Either MAC address or Client identifier (DUID) is required for '
+                                            f'static mapping "{mapping}" within shared-network "{network}, {subnet}"!')
 
             if 'option' in subnet_config:
                 if 'vendor_option' in subnet_config['option']:
@@ -188,22 +263,22 @@ def verify(dhcpv6):
 
             subnets.append(subnet)
 
-        # DHCPv6 requires at least one configured address range or one static mapping
-        # (FIXME: is not actually checked right now?)
+            # DHCPv6 requires at least one configured address range or one static mapping
+            # (FIXME: is not actually checked right now?)
 
-        # There must be one subnet connected to a listen interface if network is not disabled.
-        if 'disable' not in network_config:
-            if is_subnet_connected(subnet):
-                listen_ok = True
+            # There must be one subnet connected to a listen interface if network is not disabled.
+            if 'disable' not in network_config:
+                if is_subnet_connected(subnet):
+                    listen_ok = True
 
-            # DHCPv6 subnet must not overlap. ISC DHCP also complains about overlapping
-            # subnets: "Warning: subnet 2001:db8::/32 overlaps subnet 2001:db8:1::/32"
-            net = ip_network(subnet)
-            for n in subnets:
-                net2 = ip_network(n)
-                if (net != net2):
-                    if net.overlaps(net2):
-                        raise ConfigError('DHCPv6 conflicting subnet ranges: {0} overlaps {1}'.format(net, net2))
+                # DHCPv6 subnet must not overlap. ISC DHCP also complains about overlapping
+                # subnets: "Warning: subnet 2001:db8::/32 overlaps subnet 2001:db8:1::/32"
+                net = ip_network(subnet)
+                for n in subnets:
+                    net2 = ip_network(n)
+                    if (net != net2):
+                        if net.overlaps(net2):
+                            raise ConfigError('DHCPv6 conflicting subnet ranges: {0} overlaps {1}'.format(net, net2))
 
     if not listen_ok:
         raise ConfigError('None of the DHCPv6 subnets are connected to a subnet6 on '\
@@ -239,14 +314,24 @@ def generate(dhcpv6):
     return None
 
 def apply(dhcpv6):
+    # if running in vrf, set base differently
+    if argv and len(argv) > 1:
+        vrf_name = argv[1]
+        service_name = f'isc-kea-dhcp6-server@{vrf_name}.service'
+    else:
+        service_name = 'isc-kea-dhcp6-server.service'
+
     # bail out early - looks like removal from running config
-    service_name = 'kea-dhcp6-server.service'
     if not dhcpv6 or 'disable' in dhcpv6:
         # DHCP server is removed in the commit
         call(f'systemctl stop {service_name}')
         if os.path.exists(config_file):
             os.unlink(config_file)
         return None
+
+    result, output = kea_test_config('kea-dhcp6', config_file)
+    if not result:
+        raise ConfigError(f'Unexpected error with Kea configuration:\n{output}')
 
     call(f'systemctl restart {service_name}')
 

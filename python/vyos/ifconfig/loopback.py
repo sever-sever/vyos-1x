@@ -1,4 +1,4 @@
-# Copyright 2019-2022 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -22,19 +22,23 @@ class LoopbackIf(Interface):
     uses to communicate with itself.
     """
     _persistent_addresses = ['127.0.0.1/8', '::1/128']
-    iftype = 'loopback'
     definition = {
         **Interface.definition,
         **{
             'section': 'loopback',
             'prefixes': ['lo', ],
             'bridgeable': True,
+            'eternal': 'lo$',
         }
     }
 
+    def _create(self):
+        # we cannot create this interface as it is managed by the Kernel
+        pass
+
     def remove(self):
         """
-        Loopback interface can not be deleted from operating system. We can
+        Loopback interface cannot be deleted from operating system. We can
         only remove all assigned IP addresses.
 
         Example:
@@ -52,9 +56,9 @@ class LoopbackIf(Interface):
             self.del_addr(addr)
 
     def update(self, config):
-        """ General helper function which works on a dictionary retrived by
+        """ General helper function which works on a dictionary retrieved by
         get_config_dict(). It's main intention is to consolidate the scattered
-        interface setup code and provide a single point of entry when workin
+        interface setup code and provide a single point of entry when working
         on any interface. """
 
         address = config.get('address', [])

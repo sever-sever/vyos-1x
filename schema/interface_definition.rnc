@@ -1,6 +1,6 @@
 #    interface_definition.rnc: VyConf reference tree XML grammar
 #
-#    Copyright (C) 2014. 2017 VyOS maintainers and contributors <maintainers@vyos.net>
+#    Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 #    This library is free software; you can redistribute it and/or
 #    modify it under the terms of the GNU Lesser General Public
@@ -96,7 +96,20 @@ properties = element properties
     constraintGroup* &
     valueHelp* &
     (element constraintErrorMessage { text })? &
+    (element constraintSilenceOutput { empty })? &
     completionHelp* &
+    
+    # "docs" is used to store documentation for a node in a structured format
+    # It is used to generate documentation for the CLI and Web docs
+    (element docs {
+        (element headline { text })? &
+        (element text { text })? &
+        (element usageExample { text })? &
+        (element hints {
+            attribute type { text },
+            text
+        })*
+    })? &
 
     # These are meaningful only for leaf nodes
     (element valueless { empty })? &
@@ -174,7 +187,7 @@ valueHelp = element valueHelp
 
 # completionHelp tags contain information about allowed values of a node that is used for generating
 # tab completion in the CLI frontend and drop-down lists in GUI frontends
-# It is only meaninful for leaf nodes
+# It is only meaningful for leaf nodes
 # Allowed values can be given as a fixed list of values (e.g. <list>foo bar baz</list>),
 # as a configuration path (e.g. <path>interfaces ethernet</path>),
 # or as a path to a script file that generates the list (e.g. <script>/usr/lib/foo/list-things</script>

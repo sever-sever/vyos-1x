@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -224,6 +224,18 @@ def get_config(config=None):
 
             dns['authoritative_zones'].append(zone)
 
+    if 'zone_cache' in dns:
+        # convert refresh interval to sec:
+        for _, zone_conf in dns['zone_cache'].items():
+            if 'options' in zone_conf \
+                    and 'refresh' in zone_conf['options']:
+
+                if 'on_reload' in zone_conf['options']['refresh']:
+                    interval = 0
+                else:
+                    interval = zone_conf['options']['refresh']['interval']
+                zone_conf['options']['refresh']['interval'] = interval
+
     return dns
 
 def verify(dns):
@@ -237,7 +249,7 @@ def verify(dns):
     if 'allow_from' not in dns:
         raise ConfigError('DNS forwarding requires an allow-from network')
 
-    # we can not use dict_search() when testing for domain servers
+    # we cannot use dict_search() when testing for domain servers
     # as a domain will contains dot's which is out dictionary delimiter.
     if 'domain' in dns:
         for domain in dns['domain']:
@@ -259,7 +271,15 @@ def verify(dns):
         if not 'system_name_server' in dns:
             print('Warning: No "system name-server" configured')
 
+    if 'zone_cache' in dns:
+        for name, conf in dns['zone_cache'].items():
+            if ('source' not in conf) \
+                    or ('url' in conf['source'] and 'axfr' in conf['source']):
+                raise ConfigError(f'Invalid configuration for zone "{name}": '
+                                  f'Please select one source type "url" or "axfr".')
+
     return None
+
 
 def generate(dns):
     # bail out early - looks like removal from running config
@@ -342,6 +362,13 @@ def apply(dns):
                 # names (DHCP) to use DNS servers. We need to check if the
                 # value is an interface name - only if this is the case, add the
                 # interface based DNS forwarder.
+                if interface_exists(interface):
+                    hc.add_name_server_tags_recursor(['dhcp-' + interface,
+                                                      'dhcpv6-' + interface ])
+
+        # add dhcp interfaces
+        if 'dhcp' in dns:
+            for interface in dns['dhcp']:
                 if interface_exists(interface):
                     hc.add_name_server_tags_recursor(['dhcp-' + interface,
                                                       'dhcpv6-' + interface ])

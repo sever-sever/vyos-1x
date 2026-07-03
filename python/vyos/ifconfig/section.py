@@ -1,4 +1,4 @@
-# Copyright 2020 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -97,7 +97,9 @@ class Section:
 
         for ifname in interfaces:
             ifsection = cls.section(ifname)
-            if not ifsection and not ifname.startswith('vrrp'):
+            if not ifsection and not (
+                ifname.startswith('vrrp') or ifname.startswith('vpp')
+            ):
                 continue
 
             if section and ifsection != section:
@@ -128,7 +130,7 @@ class Section:
                 value *= 100
                 value += (ord(n) - ord('a'))
             value += number
-            # vlan are 16 bits, so this can not overflow
+            # vlan are 16 bits, so this cannot overflow
             value = (value << 16) + vlan
             value = (value << 16) + qinq
             return value
@@ -144,8 +146,16 @@ class Section:
         if no section is provided, then it returns all configured interfaces.
         If vlan is True, also Vlan subinterfaces will be returned
         """
-
         return cls._sort_interfaces(cls._intf_under_section(section, vlan))
+
+    @classmethod
+    def sub_interfaces(cls, interface : str) -> list:
+        """
+        return a list of subinterfaces (e.g. VLAN) derived from a given interface
+        """
+        if_type = cls.section(interface)
+        res = [x for x in cls.interfaces(if_type) if x.startswith(f'{interface}.')]
+        return res
 
     @classmethod
     def _intf_with_feature(cls, feature=''):
@@ -176,7 +186,7 @@ class Section:
         return list(cls._prefixes.keys())
 
     @classmethod
-    def get_config_path(cls, name):
+    def get_config_path(cls, name, delimiter=' '):
         """
         get config path to interface with .vif or .vif-s.vif-c
         example: eth0.1.2 -> 'ethernet eth0 vif-s 1 vif-c 2'
@@ -185,11 +195,11 @@ class Section:
         sect = cls.section(name)
         if sect:
             splinterface = name.split('.')
-            intfpath = f'{sect} {splinterface[0]}'
+            intfpath = f'{sect}{delimiter}{splinterface[0]}'
             if len(splinterface) == 2:
-                intfpath += f' vif {splinterface[1]}'
+                intfpath += f'{delimiter}vif{delimiter}{splinterface[1]}'
             elif len(splinterface) == 3:
-                intfpath += f' vif-s {splinterface[1]} vif-c {splinterface[2]}'
+                intfpath += f'{delimiter}vif-s{delimiter}{splinterface[1]}{delimiter}vif-c{delimiter}{splinterface[2]}'
             return intfpath
         else:
             return False

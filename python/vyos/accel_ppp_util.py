@@ -1,4 +1,4 @@
-# Copyright 2023-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -130,7 +130,7 @@ def verify_accel_ppp_authentication(config, local_users=True):
     Common helper function which must be used by all Accel-PPP services based
     on get_config_dict()
     """
-    # vertify auth settings
+    # verify auth settings
     if local_users and dict_search("authentication.mode", config) == "local":
         if (
             dict_search("authentication.local_users", config) is None
@@ -173,7 +173,7 @@ def verify_accel_ppp_authentication(config, local_users=True):
             user_config = config["authentication"]["interface"][interface]
             if "mac" not in user_config:
                 raise ConfigError(
-                    f'Users MAC addreses are not configured for interface "{interface}"')
+                    f'Users MAC addresses are not configured for interface "{interface}"')
 
     if dict_search('authentication.radius.dynamic_author.server', config):
         if not dict_search('authentication.radius.dynamic_author.key', config):
@@ -221,10 +221,12 @@ def verify_accel_ppp_ip_pool(vpn_config):
                     for interface, interface_config in vpn_config['interface'].items():
                         if dict_search('client_subnet', interface_config):
                             break
+                        if dict_search('external_dhcp.dhcp_relay', interface_config):
+                            break
                     else:
                         raise ConfigError(
                             'Local auth and noauth mode requires local client-ip-pool \
-                             or client-ipv6-pool or client-subnet to be configured!')
+                             or client-ipv6-pool or client-subnet or dhcp-relay to be configured!')
             else:
                 raise ConfigError(
                     "Local auth mode requires local client-ip-pool \

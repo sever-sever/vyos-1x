@@ -1,4 +1,4 @@
-# Copyright 2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -18,55 +18,67 @@ import os
 from contextlib import contextmanager
 from syslog import syslog
 
+from vyos.utils.locking import Lock
+
 VTI_WANT_UP_IFLIST = '/tmp/ipsec_vti_interfaces'
+VTI_UPDOWN_LOCK_NAME = 'ipsec_vti_updown'
 
 def vti_updown_db_exists():
     """ Returns true if the database exists """
     return os.path.exists(VTI_WANT_UP_IFLIST)
 
 @contextmanager
+def _vti_updown_db_lock():
+    """Serialise access to the VTI up/down DB across the concurrent updown-hook
+    invocations (one per VTI) that strongSwan fires during a coordinated rekey,
+    which would otherwise lost-update the shared state file."""
+    lock = Lock(VTI_UPDOWN_LOCK_NAME)
+    lock.acquire()  # timeout=0 -> block until acquired
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+@contextmanager
 def open_vti_updown_db_for_create_or_update():
     """ Opens the database for reading and writing, creating the database if it does not exist """
-    if vti_updown_db_exists():
-        f = open(VTI_WANT_UP_IFLIST, 'r+')
-    else:
-        f = open(VTI_WANT_UP_IFLIST, 'x+')
-    try:
-        db = VTIUpDownDB(f)
-        yield db
-    finally:
-        f.close()
+    with _vti_updown_db_lock():
+        mode = 'r+' if vti_updown_db_exists() else 'x+'
+        with open(VTI_WANT_UP_IFLIST, mode) as f:
+            yield VTIUpDownDB(f)
 
 @contextmanager
 def open_vti_updown_db_for_update():
     """ Opens the database for reading and writing, returning an error if it does not exist """
-    f = open(VTI_WANT_UP_IFLIST, 'r+')
-    try:
-        db = VTIUpDownDB(f)
-        yield db
-    finally:
-        f.close()
+    with _vti_updown_db_lock():
+        with open(VTI_WANT_UP_IFLIST, 'r+') as f:
+            yield VTIUpDownDB(f)
 
 @contextmanager
 def open_vti_updown_db_readonly():
-    """ Opens the database for reading, returning an error if it does not exist """
-    f = open(VTI_WANT_UP_IFLIST, 'r')
-    try:
-        db = VTIUpDownDB(f)
-        yield db
-    finally:
-        f.close()
+    """Opens the database for reading. Yields None if the database does not exist."""
+    with _vti_updown_db_lock():
+        if not vti_updown_db_exists():
+            yield None
+            return
+        with open(VTI_WANT_UP_IFLIST, 'r') as f:
+            yield VTIUpDownDB(f)
 
 def remove_vti_updown_db():
-    """ Brings down any interfaces referenced by the database and removes the database """
-    # We need to process the DB first to bring down any interfaces still up
-    with open_vti_updown_db_for_update() as db:
-        db.removeAllOtherInterfaces([])
-        # this usage of commit will only ever bring down interfaces,
-        # do not need to provide a functional interface dict supplier
-        db.commit(lambda _: None)
-
-    os.unlink(VTI_WANT_UP_IFLIST)
+    """Brings down any interfaces referenced by the database and removes the database, if it exists."""
+    with _vti_updown_db_lock():
+        if not vti_updown_db_exists():
+            return
+        # We hold the lock already; open the file directly rather than via the
+        # locking context manager to avoid re-acquiring (which would deadlock).
+        with open(VTI_WANT_UP_IFLIST, 'r+') as f:
+            db = VTIUpDownDB(f)
+            db.removeAllOtherInterfaces([])
+            # this usage of commit will only ever bring down interfaces,
+            # do not need to provide a functional interface dict supplier
+            db.commit(lambda _: None)
+        os.unlink(VTI_WANT_UP_IFLIST)
 
 class VTIUpDownDB:
     # The VTI Up-Down DB is a text-based database of space-separated "ifspecs".
@@ -111,7 +123,7 @@ class VTIUpDownDB:
         """
         Removes a matching entry from the DB.
 
-        If no matching entry can be fonud, the operation returns successfully.
+        If no matching entry can be found, the operation returns successfully.
         """
         ifspec = f"{interface}:{connection}:{protocol}" if (connection is not None and protocol is not None) else interface
         if ifspec in self._ifspecs:
@@ -144,15 +156,15 @@ class VTIUpDownDB:
 
     def setPersistentInterfaces(self, interface_list):
         """ Updates the set of persistently up interfaces to match the given list """
-        new_presistent_interfaces = set(interface_list)
-        current_presistent_interfaces = set([ifspec for ifspec in self._ifspecs if ':' not in ifspec])
-        added_presistent_interfaces = new_presistent_interfaces - current_presistent_interfaces
-        removed_presistent_interfaces = current_presistent_interfaces - new_presistent_interfaces
+        new_persistent_interfaces = set(interface_list)
+        current_persistent_interfaces = set([ifspec for ifspec in self._ifspecs if ':' not in ifspec])
+        added_persistent_interfaces = new_persistent_interfaces - current_persistent_interfaces
+        removed_persistent_interfaces = current_persistent_interfaces - new_persistent_interfaces
 
-        for interface in added_presistent_interfaces:
+        for interface in added_persistent_interfaces:
             self.add(interface)
 
-        for interface in removed_presistent_interfaces:
+        for interface in removed_persistent_interfaces:
             self.remove(interface)
 
     def commit(self, interface_dict_supplier):
@@ -173,7 +185,7 @@ class VTIUpDownDB:
         self._fileHandle.truncate()
 
         for interface in self._ifsDown:
-            vti_link = get_interface_config(interface)
+            vti_link = get_interface_config(interface) or {}
             vti_link_up = (vti_link['operstate'] != 'DOWN' if 'operstate' in vti_link else False)
             if vti_link_up:
                 call(f'sudo ip link set {interface} down')
@@ -182,7 +194,7 @@ class VTIUpDownDB:
         self._ifsDown.clear()
 
         for interface in self._ifsUp:
-            vti_link = get_interface_config(interface)
+            vti_link = get_interface_config(interface) or {}
             vti_link_up = (vti_link['operstate'] != 'DOWN' if 'operstate' in vti_link else False)
             if not vti_link_up:
                 vti = interface_dict_supplier(interface)

@@ -1,4 +1,4 @@
-# Copyright 2019-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -42,8 +42,6 @@ class VXLANIf(Interface):
     For more information please refer to:
     https://www.kernel.org/doc/Documentation/networking/vxlan.txt
     """
-
-    iftype = 'vxlan'
     definition = {
         **Interface.definition,
         **{
@@ -94,7 +92,7 @@ class VXLANIf(Interface):
             remote_list = self.config['remote'][1:]
             self.config['remote'] = self.config['remote'][0]
 
-        cmd = 'ip link add {ifname} type {type} dstport {port}'
+        cmd = 'ip link add {ifname} type vxlan dstport {port}'
         for vyos_key, iproute2_key in mapping.items():
             # dict_search will return an empty dict "{}" for valueless nodes like
             # "parameters.nolearning" - thus we need to test the nodes existence
@@ -160,8 +158,8 @@ class VXLANIf(Interface):
                 if cur_vni_filter != None:
                     vni = vlan_config['vni']
                     if vni in cur_vni_filter:
-                        self._cmd(f'bridge vni delete dev {self.ifname} vni {vni}')
-                self._cmd(f'bridge vlan del dev {self.ifname} vid {vlan}')
+                        self._cmdl(['bridge', 'vni', 'delete', 'dev', self.ifname, 'vni', str(vni)])
+                self._cmdl(['bridge', 'vlan', 'del', 'dev', self.ifname, 'vid', str(vlan)])
 
         # Determine current OS Kernel vlan_tunnel setting - only adjust when needed
         tmp = get_interface_config(self.ifname)
@@ -183,18 +181,18 @@ class VXLANIf(Interface):
 
                 vni = vlan_config['vni']
                 # The following commands must be run one after another,
-                # they can not be combined with linux 6.1 and iproute2 6.1
-                self._cmd(f'bridge vlan add dev {self.ifname} vid {vlan}')
-                self._cmd(f'bridge vlan add dev {self.ifname} vid {vlan} tunnel_info id {vni}')
+                # they cannot be combined with linux 6.1 and iproute2 6.1
+                self._cmdl(['bridge', 'vlan', 'add', 'dev', self.ifname, 'vid', str(vlan)])
+                self._cmdl(['bridge', 'vlan', 'add', 'dev', self.ifname, 'vid', str(vlan), 'tunnel_info', 'id', str(vni)])
 
                 # If VNI filtering is enabled, install matching VNI filter
                 if dict_search('parameters.vni_filter', self.config) != None:
-                    self._cmd(f'bridge vni add dev {self.ifname} vni {vni}')
+                    self._cmdl(['bridge', 'vni', 'add', 'dev', self.ifname, 'vni', str(vni)])
 
     def update(self, config):
-        """ General helper function which works on a dictionary retrived by
+        """ General helper function which works on a dictionary retrieved by
         get_config_dict(). It's main intention is to consolidate the scattered
-        interface setup code and provide a single point of entry when workin
+        interface setup code and provide a single point of entry when working
         on any interface. """
 
         # call base class last

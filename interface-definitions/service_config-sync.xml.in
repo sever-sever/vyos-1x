@@ -337,7 +337,7 @@
                   </leafNode>
                   <leafNode name="segment-routing">
                     <properties>
-                      <help>Segment Routing</help>
+                      <help>Segment-Routing (SR) parameters</help>
                       <valueless/>
                     </properties>
                   </leafNode>
@@ -473,6 +473,12 @@
                   <leafNode name="flow-accounting">
                     <properties>
                       <help>Flow accounting</help>
+                      <valueless/>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="login">
+                    <properties>
+                      <help>System User Login</help>
                       <valueless/>
                     </properties>
                   </leafNode>

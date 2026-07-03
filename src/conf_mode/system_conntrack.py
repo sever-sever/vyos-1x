@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -32,7 +32,6 @@ from vyos import ConfigError
 from vyos import airbag
 airbag.enable()
 
-conntrack_config = r'/etc/modprobe.d/vyatta_nf_conntrack.conf'
 sysctl_file = r'/run/sysctl/10-vyos-conntrack.conf'
 nftables_ct_file = r'/run/nftables-ct.conf'
 vyos_conntrack_logger_config = r'/run/vyos-conntrack-logger.conf'
@@ -169,7 +168,7 @@ def verify(conntrack):
                                     if not group_obj:
                                         Warning(f'{error_group} "{group_name}" has no members!')
 
-            Warning(f'It is prefered to define {inet} conntrack ignore rules in <firewall {inet} prerouting raw> section')
+            Warning(f'It is preferred to define {inet} conntrack ignore rules in <firewall {inet} prerouting raw> section')
 
         if dict_search_args(conntrack, 'timeout', 'custom', inet, 'rule') != None:
             for rule, rule_config in conntrack['timeout']['custom'][inet]['rule'].items():
@@ -204,7 +203,6 @@ def generate(conntrack):
                 elif path[0] == 'ipv6':
                     conntrack['ipv6_firewall_action'] = 'accept'
 
-    render(conntrack_config, 'conntrack/vyos_nf_conntrack.conf.j2', conntrack)
     render(sysctl_file, 'conntrack/sysctl.conf.j2', conntrack)
     render(nftables_ct_file, 'conntrack/nftables-ct.j2', conntrack)
 
@@ -258,6 +256,8 @@ def apply(conntrack):
 
     if 'log' in conntrack:
         call(f'systemctl restart vyos-conntrack-logger.service')
+    else:
+        call(f'systemctl stop vyos-conntrack-logger.service')
 
     return None
 

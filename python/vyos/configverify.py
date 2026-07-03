@@ -1,4 +1,4 @@
-# Copyright 2020-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -22,14 +22,18 @@
 # makes use of it!
 
 from vyos import ConfigError
+from vyos.base import Warning
 from vyos.utils.dict import dict_search
+from vyos.utils.dict import dict_search_recursive
+from vyos.utils.network import interface_exists
+
 # pattern re-used in ipsec migration script
 dynamic_interface_pattern = r'(ppp|pppoe|sstpc|l2tp|ipoe)[0-9]+'
 
 def verify_mtu(config):
     """
     Common helper function used by interface implementations to perform
-    recurring validation if the specified MTU can be used by the underlaying
+    recurring validation if the specified MTU can be used by the underlying
     hardware.
     """
     from vyos.ifconfig import Interface
@@ -92,12 +96,14 @@ def verify_mtu_ipv6(config):
             tmp = dict_search('ipv6.address.eui64', config)
             if tmp != None: raise ConfigError(error_msg)
 
+            tmp = dict_search('ipv6.address.interface_identifier', config)
+            if tmp != None: raise ConfigError(error_msg)
+
 def verify_vrf(config):
     """
     Common helper function used by interface implementations to perform
     recurring validation of VRF configuration.
     """
-    from vyos.utils.network import interface_exists
     if 'vrf' in config:
         vrfs = config['vrf']
         if isinstance(vrfs, str):
@@ -122,9 +128,9 @@ def verify_bond_bridge_member(config):
     if 'vrf' in config:
         ifname = config['ifname']
         if 'is_bond_member' in config:
-            raise ConfigError(f'Can not add interface "{ifname}" to bond, it has a VRF assigned!')
+            raise ConfigError(f'Cannot add interface "{ifname}" to bond, it has a VRF assigned!')
         if 'is_bridge_member' in config:
-            raise ConfigError(f'Can not add interface "{ifname}" to bridge, it has a VRF assigned!')
+            raise ConfigError(f'Cannot add interface "{ifname}" to bridge, it has a VRF assigned!')
 
 def verify_tunnel(config):
     """
@@ -161,11 +167,11 @@ def verify_tunnel(config):
     if config['encapsulation'] in ['sit', 'gretap', 'ip6gretap']:
         if 'source_interface' in config:
             encapsulation = config['encapsulation']
-            raise ConfigError(f'Option source-interface can not be used with ' \
+            raise ConfigError(f'Option source-interface cannot be used with ' \
                               f'encapsulation "{encapsulation}"!')
     elif config['encapsulation'] == 'gre':
         if 'source_address' in config and is_ipv6(config['source_address']):
-            raise ConfigError('Can not use local IPv6 address is for mGRE tunnels')
+            raise ConfigError('Cannot use local IPv6 address is for mGRE tunnels')
 
 def verify_mirror_redirect(config):
     """
@@ -174,9 +180,13 @@ def verify_mirror_redirect(config):
 
     It makes no sense to mirror traffic back at yourself!
     """
-    from vyos.utils.network import interface_exists
-    if {'mirror', 'redirect'} <= set(config):
-        raise ConfigError('Mirror and redirect can not be enabled at the same time!')
+    if 'mirror' in config and 'redirect' in config:
+        raise ConfigError('Mirror and redirect cannot be enabled at the same time!')
+
+    if 'mirror' in config and 'qos' in config:
+        # XXX: support combination of limiting and mirror - this is an artificial
+        # limitation from the past
+        raise ConfigError('Cannot use QoS together with mirror!')
 
     if 'mirror' in config:
         for direction, mirror_interface in config['mirror'].items():
@@ -185,7 +195,7 @@ def verify_mirror_redirect(config):
                                    'does not exist!')
 
             if mirror_interface == config['ifname']:
-                raise ConfigError(f'Can not mirror "{direction}" traffic back '\
+                raise ConfigError(f'Cannot mirror "{direction}" traffic back '\
                                    'the originating interface!')
 
     if 'redirect' in config:
@@ -193,11 +203,6 @@ def verify_mirror_redirect(config):
         if not interface_exists(redirect_ifname):
             raise ConfigError(f'Requested redirect interface "{redirect_ifname}" '\
                                'does not exist!')
-
-    if ('mirror' in config or 'redirect' in config) and dict_search('traffic_policy.in', config) is not None:
-        # XXX: support combination of limiting and redirect/mirror - this is an
-        # artificial limitation
-        raise ConfigError('Can not use ingress policy together with mirror or redirect!')
 
 def verify_authentication(config):
     """
@@ -237,29 +242,65 @@ def verify_bridge_delete(config):
         raise ConfigError(f'Interface "{interface}" cannot be deleted as it '
                           f'is a member of bridge "{bridge_name}"!')
 
-def verify_interface_exists(ifname, warning_only=False):
+def verify_interface_exists(config, ifname, state_required=False, warning_only=False):
     """
     Common helper function used by interface implementations to perform
     recurring validation if an interface actually exists. We first probe
     if the interface is defined on the CLI, if it's not found we try if
     it exists at the OS level.
     """
-    from vyos.base import Warning
-    from vyos.configquery import ConfigTreeQuery
-    from vyos.utils.dict import dict_search_recursive
-    from vyos.utils.network import interface_exists
-
-    # Check if interface is present in CLI config
-    config = ConfigTreeQuery()
-    tmp = config.get_config_dict(['interfaces'], get_first_key=True)
-    if bool(list(dict_search_recursive(tmp, ifname))):
-        return True
+    if not state_required:
+        # Check if interface is present in CLI config
+        tmp = getattr(config, 'interfaces_root', {})
+        if bool(list(dict_search_recursive(tmp, ifname))):
+            return True
 
     # Interface not found on CLI, try Linux Kernel
     if interface_exists(ifname):
         return True
 
     message = f'Interface "{ifname}" does not exist!'
+    if warning_only:
+        Warning(message)
+        return False
+    raise ConfigError(message)
+
+def verify_virtual_interface_exists(
+    config, ifname, state_required=False, warning_only=False
+):
+    """
+    Verify the existence of a virtual network interface in the configuration or the Linux kernel.
+
+    This function checks whether a specified virtual interface exists in the provided configuration
+    or in the Linux kernel. It can return a warning or raise an error based on the parameters provided.
+    """
+    physical_ifname, vif_id = ifname.split('.', maxsplit=1)
+
+    if vif_id and '.' in vif_id:
+        vif_s, vif_c = vif_id.split('.', maxsplit=1)
+        vif_id = None
+    else:
+        vif_s = vif_c = None
+
+    if not state_required:
+        # Check if sub-interface is present in CLI config
+        interfaces_root = getattr(config, 'interfaces_root', {})
+
+        if vif_s and vif_c:
+            path = ['ethernet', physical_ifname, 'vif-s', vif_s, 'vif-c']
+            key = vif_c
+        else:
+            path = ['ethernet', physical_ifname, 'vif']
+            key = vif_id
+
+        if bool(list(dict_search_recursive(interfaces_root, key, path=path))):
+            return True
+
+    # Interface not found on CLI, try Linux Kernel
+    if interface_exists(ifname):
+        return True
+
+    message = f'Virtual Interface "{ifname}" does not exist!'
     if warning_only:
         Warning(message)
         return False
@@ -272,7 +313,6 @@ def verify_source_interface(config):
     required by e.g. peth/MACvlan, MACsec ...
     """
     import re
-    from vyos.utils.network import interface_exists
 
     ifname = config['ifname']
     if 'source_interface' not in config:
@@ -282,7 +322,7 @@ def verify_source_interface(config):
     # We do not allow sourcing other interfaces (e.g. tunnel) from dynamic interfaces
     tmp = re.compile(dynamic_interface_pattern)
     if tmp.match(src_ifname):
-        raise ConfigError(f'Can not source "{ifname}" from dynamic interface "{src_ifname}"!')
+        raise ConfigError(f'Cannot source "{ifname}" from dynamic interface "{src_ifname}"!')
 
     if not interface_exists(src_ifname):
         raise ConfigError(f'Specified source-interface {src_ifname} does not exist')
@@ -299,7 +339,7 @@ def verify_source_interface(config):
 
     if 'is_source_interface' in config:
         tmp = config['is_source_interface']
-        raise ConfigError(f'Can not use source-interface "{src_ifname}", it already ' \
+        raise ConfigError(f'Cannot use source-interface "{src_ifname}", it already ' \
                           f'belongs to interface "{tmp}"!')
 
 def verify_dhcpv6(config):
@@ -357,6 +397,7 @@ def verify_vlan_config(config):
         verify_vrf(vlan)
         verify_mirror_redirect(vlan)
         verify_mtu_parent(vlan, config)
+        verify_mtu_ipv6(vlan)
 
     # 802.1ad (Q-in-Q) VLANs
     for s_vlan_id in config.get('vif_s', {}):
@@ -368,6 +409,7 @@ def verify_vlan_config(config):
         verify_vrf(s_vlan)
         verify_mirror_redirect(s_vlan)
         verify_mtu_parent(s_vlan, config)
+        verify_mtu_ipv6(s_vlan)
 
         for c_vlan_id in s_vlan.get('vif_c', {}):
             c_vlan = s_vlan['vif_c'][c_vlan_id]
@@ -379,6 +421,7 @@ def verify_vlan_config(config):
             verify_mirror_redirect(c_vlan)
             verify_mtu_parent(c_vlan, config)
             verify_mtu_parent(c_vlan, s_vlan)
+            verify_mtu_ipv6(c_vlan)
 
 
 def verify_diffie_hellman_length(file, min_keysize):
@@ -413,7 +456,7 @@ def verify_common_route_maps(config):
     # XXX: This function is called in combination with a previous call to:
     # tmp = conf.get_config_dict(['policy']) - see protocols_ospf.py as example.
     # We should NOT call this with the key_mangling option as this would rename
-    # route-map hypens '-' to underscores '_' and one could no longer distinguish
+    # route-map hyphens '-' to underscores '_' and one could no longer distinguish
     # what should have been the "proper" route-map name, as foo-bar and foo_bar
     # are two entire different route-map instances!
     for route_map in ['route-map', 'route_map']:
@@ -421,7 +464,7 @@ def verify_common_route_maps(config):
             continue
         tmp = config[route_map]
         # Check if the specified route-map exists, if not error out
-        if dict_search(f'policy.route-map.{tmp}', config) == None:
+        if dict_search(f'policy.route_map.{tmp}', config) == None:
             raise ConfigError(f'Specified route-map "{tmp}" does not exist!')
 
     if 'redistribute' in config:
@@ -435,7 +478,7 @@ def verify_route_map(route_map_name, config):
     recurring validation if a specified route-map exists!
     """
     # Check if the specified route-map exists, if not error out
-    if dict_search(f'policy.route-map.{route_map_name}', config) == None:
+    if dict_search(f'policy.route_map.{route_map_name}', config) == None:
         raise ConfigError(f'Specified route-map "{route_map_name}" does not exist!')
 
 def verify_prefix_list(prefix_list, config, version=''):
@@ -444,7 +487,7 @@ def verify_prefix_list(prefix_list, config, version=''):
     recurring validation if a specified prefix-list exists!
     """
     # Check if the specified prefix-list exists, if not error out
-    if dict_search(f'policy.prefix-list{version}.{prefix_list}', config) == None:
+    if dict_search(f'policy.prefix_list{version}.{prefix_list}', config) == None:
         raise ConfigError(f'Specified prefix-list{version} "{prefix_list}" does not exist!')
 
 def verify_access_list(access_list, config, version=''):
@@ -453,7 +496,7 @@ def verify_access_list(access_list, config, version=''):
     recurring validation if a specified prefix-list exists!
     """
     # Check if the specified ACL exists, if not error out
-    if dict_search(f'policy.access-list{version}.{access_list}', config) == None:
+    if dict_search(f'policy.access_list{version}.{access_list}', config) == None:
         raise ConfigError(f'Specified access-list{version} "{access_list}" does not exist!')
 
 def verify_pki_certificate(config: dict, cert_name: str, no_password_protected: bool=False):
@@ -496,7 +539,7 @@ def verify_pki_ca_certificate(config: dict, ca_name: str):
 
     pki_cert = config['pki']['ca'][ca_name]
     if 'certificate' not in pki_cert:
-        raise ConfigError(f'PEM CA certificate for "{cert_name}" missing in configuration!')
+        raise ConfigError(f'PEM CA certificate for "{ca_name}" missing in configuration!')
 
 def verify_pki_dh_parameters(config: dict, dh_name: str, min_key_size: int=0):
     """
@@ -521,3 +564,49 @@ def verify_pki_dh_parameters(config: dict, dh_name: str, min_key_size: int=0):
         dh_bits = dh_numbers.p.bit_length()
         if dh_bits < min_key_size:
             raise ConfigError(f'Minimum DH key-size is {min_key_size} bits!')
+
+def verify_pki_openssh_key(config: dict, key_name: str):
+    """
+    Common helper function user by PKI consumers to perform recurring
+    validation functions on OpenSSH keys
+    """
+    if 'pki' not in config:
+        raise ConfigError('PKI is not configured!')
+
+    if 'openssh' not in config['pki']:
+        raise ConfigError('PKI does not contain any OpenSSH keys!')
+
+    if key_name not in config['pki']['openssh']:
+        raise ConfigError(f'OpenSSH key "{key_name}" not found in configuration!')
+
+    if 'public' in config['pki']['openssh'][key_name]:
+        if not {'key', 'type'} <= set(config['pki']['openssh'][key_name]['public']):
+            raise ConfigError('Both public key and type must be defined for '\
+                              f'OpenSSH public key "{key_name}"!')
+
+def verify_eapol(config: dict):
+    """
+    Common helper function used by interface implementations to perform
+    recurring validation of EAPoL configuration.
+    """
+    if 'eapol' not in config:
+        return
+
+    if 'certificate' not in config['eapol']:
+        raise ConfigError('Certificate must be specified when using EAPoL!')
+
+    verify_pki_certificate(config, config['eapol']['certificate'], no_password_protected=True)
+
+    if 'ca_certificate' in config['eapol']:
+        for ca_cert in config['eapol']['ca_certificate']:
+            verify_pki_ca_certificate(config, ca_cert)
+
+def has_frr_protocol_in_dict(config_dict: dict, protocol: str) -> bool:
+    vrf = None
+    if config_dict and 'vrf_context' in config_dict:
+        vrf = config_dict['vrf_context']
+    if vrf and protocol in (dict_search(f'vrf.name.{vrf}.protocols', config_dict) or []):
+        return True
+    if config_dict and protocol in config_dict:
+        return True
+    return False

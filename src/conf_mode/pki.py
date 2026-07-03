@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,6 +19,7 @@ import os
 from sys import argv
 from sys import exit
 
+from vyos.base import Message
 from vyos.config import Config
 from vyos.config import config_dict_merge
 from vyos.configdep import set_dependents
@@ -27,6 +28,9 @@ from vyos.configdict import node_changed
 from vyos.configdiff import Diff
 from vyos.configdiff import get_config_diff
 from vyos.defaults import directories
+from vyos.defaults import internal_ports
+from vyos.defaults import systemd_services
+from vyos.pki import encode_certificate
 from vyos.pki import is_ca_certificate
 from vyos.pki import load_certificate
 from vyos.pki import load_public_key
@@ -36,23 +40,33 @@ from vyos.pki import load_private_key
 from vyos.pki import load_crl
 from vyos.pki import load_dh_parameters
 from vyos.utils.boot import boot_configuration_complete
+from vyos.utils.configfs import add_cli_node
 from vyos.utils.dict import dict_search
 from vyos.utils.dict import dict_search_args
 from vyos.utils.dict import dict_search_recursive
+from vyos.utils.dict import dict_set_nested
+from vyos.utils.file import read_file
+from vyos.utils.network import check_port_availability
 from vyos.utils.process import call
 from vyos.utils.process import cmd
 from vyos.utils.process import is_systemd_service_active
+from vyos.utils.process import is_systemd_service_running
 from vyos import ConfigError
 from vyos import airbag
 airbag.enable()
 
 vyos_certbot_dir = directories['certbot']
+vyos_ca_certificates_dir = directories['ca_certificates']
 
 # keys to recursively search for under specified path
 sync_search = [
     {
         'keys': ['certificate'],
         'path': ['service', 'https'],
+    },
+    {
+        'keys': ['key'],
+        'path': ['service', 'ssh'],
     },
     {
         'keys': ['certificate', 'ca_certificate'],
@@ -68,7 +82,8 @@ sync_search = [
     },
     {
         'keys': ['certificate', 'ca_certificate'],
-        'path': ['load_balancing', 'reverse_proxy'],
+        'path': ['load_balancing', 'haproxy'],
+        'orig_path': ['load-balancing', 'haproxy'],
     },
     {
         'keys': ['key'],
@@ -111,26 +126,71 @@ def certbot_delete(certificate):
     if os.path.exists(f'{vyos_certbot_dir}/renewal/{certificate}.conf'):
         cmd(f'certbot delete --non-interactive --config-dir {vyos_certbot_dir} --cert-name {certificate}')
 
-def certbot_request(name: str, config: dict, dry_run: bool=True):
+def certbot_request(name: str, config: dict, dry_run: bool=True) -> None:
     # We do not call certbot when booting the system - there is no need to do so and
     # request new certificates during boot/image upgrade as the certbot configuration
     # is stored persistent under /config - thus we do not open the door to transient
     # errors
     if not boot_configuration_complete():
-        return
+        return None
 
     domains = '--domains ' + ' --domains '.join(config['domain_name'])
     tmp = f'certbot certonly --non-interactive --config-dir {vyos_certbot_dir} --cert-name {name} '\
           f'--standalone --agree-tos --no-eff-email --expand --server {config["url"]} '\
           f'--email {config["email"]} --key-type rsa --rsa-key-size {config["rsa_key_size"]} '\
           f'{domains}'
+
+    listen_address = None
     if 'listen_address' in config:
-        tmp += f' --http-01-address {config["listen_address"]}'
-    # verify() does not need to actually request a cert but only test for plausability
+        listen_address = config['listen_address']
+
+    # When ACME is used behind a reverse proxy, we always bind to localhost
+    # whatever the CLI listen-address is configured for.
+    if ('used_by' in config and 'haproxy' in config['used_by'] and
+        is_systemd_service_running(systemd_services['haproxy']) and
+        not check_port_availability(listen_address, 80)):
+        tmp += f' --http-01-address 127.0.0.1 --http-01-port {internal_ports["certbot_haproxy"]}'
+    elif listen_address:
+        tmp += f' --http-01-address {listen_address}'
+
+    # verify() does not need to actually request a cert but only test for plausibility
     if dry_run:
         tmp += ' --dry-run'
 
-    cmd(tmp, raising=ConfigError, message=f'ACME certbot request failed for "{name}"!')
+    cmd(tmp, raising=ConfigError, message=f'Certbot request failed for "{name}"!')
+    return None
+
+def certbot_renew(config: dict, force: bool=False) -> None:
+    """ Renew all certificates managed via certbot """
+    tmp = f'certbot renew --no-random-sleep-on-renew ' \
+          f'--config-dir {vyos_certbot_dir}'
+
+    # Determine services using ACME based certificates
+    pre_hook_services = []
+    stop_services = []
+    for used_by, _ in dict_search_recursive(config, 'used_by'):
+        pre_hook_services.extend(used_by)
+    # Remove duplicate items from list
+    pre_hook_services = list(set(pre_hook_services))
+    # Automatically add services in use to pre_hook_services depending on service
+    # name in vyos.defaults.systemd_services
+    if pre_hook_services:
+        for service in pre_hook_services:
+            if service in systemd_services:
+                stop_services.append(systemd_services[service])
+        tmp += ' --pre-hook "systemctl stop ' + ' '.join(stop_services) + '"'
+
+    if force:
+        tmp += ' --force-renewal'
+
+    try:
+        print(cmd(tmp, raising=ConfigError, message=f'Certbot renew failed!'))
+    except ConfigError as e:
+        print(e)
+        for service in stop_services:
+            print(f'Restarting "{service}" with non-renewed certificate...')
+            cmd(f'systemctl restart {service}')
+    return None
 
 def get_config(config=None):
     if config:
@@ -145,41 +205,25 @@ def get_config(config=None):
 
     if len(argv) > 1 and argv[1] == 'certbot_renew':
         pki['certbot_renew'] = {}
+    elif len(argv) > 1 and argv[1] == 'certbot_renew_force':
+        pki['certbot_renew'] = {'force': {}}
 
-    tmp = node_changed(conf, base + ['ca'], recursive=True, expand_nodes=Diff.DELETE | Diff.ADD)
-    if tmp:
-        if 'changed' not in pki: pki.update({'changed':{}})
-        pki['changed'].update({'ca' : tmp})
+    # Walk through the list of sync_translate mapping and build a list
+    # which is later used to check if the node was changed in the CLI config
+    changed_keys = []
+    for value in sync_translate.values():
+        if value not in changed_keys:
+            changed_keys.append(value)
+    # Check for changes to said given keys in the CLI config
+    for key in changed_keys:
+        tmp = node_changed(conf, base + [key], recursive=True, expand_nodes=Diff.DELETE | Diff.ADD)
+        if tmp:
+            dict_set_nested(f'changed.{key.replace("-", "_")}', tmp, pki)
 
-    tmp = node_changed(conf, base + ['certificate'], recursive=True, expand_nodes=Diff.DELETE | Diff.ADD)
-    if tmp:
-        if 'changed' not in pki: pki.update({'changed':{}})
-        pki['changed'].update({'certificate' : tmp})
-
-    tmp = node_changed(conf, base + ['dh'], recursive=True, expand_nodes=Diff.DELETE | Diff.ADD)
-    if tmp:
-        if 'changed' not in pki: pki.update({'changed':{}})
-        pki['changed'].update({'dh' : tmp})
-
-    tmp = node_changed(conf, base + ['key-pair'], recursive=True, expand_nodes=Diff.DELETE | Diff.ADD)
-    if tmp:
-        if 'changed' not in pki: pki.update({'changed':{}})
-        pki['changed'].update({'key_pair' : tmp})
-
-    tmp = node_changed(conf, base + ['openssh'], recursive=True, expand_nodes=Diff.DELETE | Diff.ADD)
-    if tmp:
-        if 'changed' not in pki: pki.update({'changed':{}})
-        pki['changed'].update({'openssh' : tmp})
-
-    tmp = node_changed(conf, base + ['openvpn', 'shared-secret'], recursive=True, expand_nodes=Diff.DELETE | Diff.ADD)
-    if tmp:
-        if 'changed' not in pki: pki.update({'changed':{}})
-        pki['changed'].update({'openvpn' : tmp})
-
-    # We only merge on the defaults of there is a configuration at all
+    # We only merge on the defaults if there is a configuration at all
     if conf.exists(base):
         # We have gathered the dict representation of the CLI, but there are default
-        # options which we need to update into the dictionary retrived.
+        # options which we need to update into the dictionary retrieved.
         default_values = conf.get_config_defaults(**pki.kwargs, recursive=True)
         # remove ACME default configuration if unused by CLI
         if 'certificate' in pki:
@@ -199,9 +243,14 @@ def get_config(config=None):
         for name, cert_config in pki['certificate'].items():
             if 'acme' in cert_config:
                 renew.append(name)
-        # If triggered externally by certbot, certificate key is not present in changed
-        if 'changed' not in pki: pki.update({'changed':{}})
-        pki['changed'].update({'certificate' : renew})
+        if renew:
+            # Get the current list of changed certificates
+            tmp = pki.get('changed', {}).get('certificate', [])
+            # and extend it with the list of ACME based certificates
+            tmp += renew
+            # remove any duplicates if necessary
+            tmp = set(tmp)
+            dict_set_nested('changed.certificate', tmp, pki)
 
     # We need to get the entire system configuration to verify that we are not
     # deleting a certificate that is still referenced somewhere!
@@ -234,9 +283,13 @@ def get_config(config=None):
                         if isinstance(found_name, str) and found_name != item_name:
                             continue
 
-                        path = search['path']
-                        path_str = ' '.join(path + found_path)
-                        #print(f'PKI: Updating config: {path_str} {item_name}')
+                        # prefer orig_path over path when unmangling is needed
+                        path = search.get('orig_path', search.get('path'))
+                        # Only enable this for debug purposes - otherwise we will always
+                        # print this message for ACME certificates during renew tests -
+                        # even if they are not due for renew!
+                        # path_str = ' '.join(path + found_path)
+                        # print(f'Updating configuration: "{path_str} {item_name}"')
 
                         if path[0] == 'interfaces':
                             ifname = found_path[0]
@@ -245,6 +298,34 @@ def get_config(config=None):
                         else:
                             if not D.node_changed_presence(path):
                                 set_dependents(path[1], conf)
+
+    # Check PKI certificates if they are auto-generated by ACME. If they are,
+    # traverse the current configuration and determine the service where the
+    # certificate is used by.
+    # Required to check if we might need to run certbot behind a reverse proxy.
+    if 'certificate' in pki:
+        for name, cert_config in pki['certificate'].items():
+            if 'acme' not in cert_config:
+                continue
+            if not dict_search('system.load_balancing.haproxy', pki):
+                continue
+            # Determine which service depends on ACME issued certificates
+            # We only need to add services blocking the default certbot ports
+            # 80 and 443. For instance there won't be a conflict with strongSwan
+            # as it runs on different ports.
+            used_by = []
+            # We start with HAProxy
+            for cert_list, _ in dict_search_recursive(
+                pki['system']['load_balancing']['haproxy'], 'certificate'):
+                if name in cert_list:
+                    used_by.append('haproxy')
+            # Check if OpenConnect consumes an ACME certificate
+            tmp = dict_search('system.vpn.openconnect.ssl.certificate', pki)
+            if tmp and tmp in cert_list:
+                used_by.append('openconnect')
+
+            if used_by:
+                pki['certificate'][name]['acme'].update({'used_by': used_by})
 
     return pki
 
@@ -337,9 +418,23 @@ def verify(pki):
                     raise ConfigError(f'An email address is required to request '\
                                     f'certificate for "{name}" via ACME!')
 
+                listen_address = None
+                if 'listen_address' in cert_conf['acme']:
+                    listen_address = cert_conf['acme']['listen_address']
+
+                if 'used_by' not in cert_conf['acme']:
+                    # A call to check_port_availability() will always fail during system
+                    # boot when listen_address is set and the address is not yet assigned
+                    # to an interface. This happens b/c PKI subsystem is called prior
+                    # to any interface - e.g. ethernet - and thus the OS will always
+                    # be unable to bind() a socket() to a non existing IP address.
+                    if boot_configuration_complete() and not check_port_availability(listen_address, 80):
+                        raise ConfigError('Port 80 is already in use and not available '\
+                                          f'to provide ACME challenge for "{name}"!')
+
+                # Only run the ACME command if something on this entity changed,
+                # as this is time intensive
                 if 'certbot_renew' not in pki:
-                    # Only run the ACME command if something on this entity changed,
-                    # as this is time intensive
                     tmp = dict_search('changed.certificate', pki)
                     if tmp != None and name in tmp:
                         certbot_request(name, cert_conf['acme'])
@@ -382,7 +477,8 @@ def verify(pki):
             if 'country' in default_values:
                 country = default_values['country']
                 if len(country) != 2 or not country.isalpha():
-                    raise ConfigError(f'Invalid default country value. Value must be 2 alpha characters.')
+                    raise ConfigError('Invalid default country value. '\
+                                      'Value must be 2 alpha characters.')
 
     if 'changed' in pki:
         # if the list is getting longer, we can move to a dict() and also embed the
@@ -390,38 +486,70 @@ def verify(pki):
         for search in sync_search:
             for key in search['keys']:
                 changed_key = sync_translate[key]
-
                 if changed_key not in pki['changed']:
                     continue
-
                 for item_name in pki['changed'][changed_key]:
                     node_present = False
                     if changed_key == 'openvpn':
                         node_present = dict_search_args(pki, 'openvpn', 'shared_secret', item_name)
                     else:
                         node_present = dict_search_args(pki, changed_key, item_name)
+                    # If the node is still present, we can skip the check
+                    # as we are not deleting it
+                    if node_present:
+                        continue
 
-                    if not node_present:
-                        search_dict = dict_search_args(pki['system'], *search['path'])
+                    search_dict = dict_search_args(pki['system'], *search['path'])
+                    if not search_dict:
+                        continue
 
-                        if not search_dict:
-                            continue
-
-                        for found_name, found_path in dict_search_recursive(search_dict, key):
-                            if found_name == item_name:
-                                path_str = " ".join(search['path'] + found_path)
-                                raise ConfigError(f'PKI object "{item_name}" still in use by "{path_str}"')
+                    for found_name, found_path in dict_search_recursive(search_dict, key):
+                        # Check if the name matches either by string compare, or being
+                        # part of a list
+                        if ((isinstance(found_name, str) and found_name == item_name) or
+                            (isinstance(found_name, list) and item_name in found_name)):
+                            # We do not support _ in CLI paths - this is only a convenience
+                            # as we mangle all - to _, now it's time to reverse this!
+                            path_str = ' '.join(search['path'] + found_path).replace('_','-')
+                            object = changed_key.replace('_','-')
+                            tmp = f'Embedded PKI {object} with name "{item_name}" is still '\
+                                  f'in use by CLI path "{path_str}"'
+                            raise ConfigError(tmp)
 
     return None
 
+def cleanup_system_ca():
+    if not os.path.exists(vyos_ca_certificates_dir):
+        os.mkdir(vyos_ca_certificates_dir)
+    else:
+        for filename in os.listdir(vyos_ca_certificates_dir):
+            full_path = os.path.join(vyos_ca_certificates_dir, filename)
+            if os.path.isfile(full_path):
+                os.unlink(full_path)
+
 def generate(pki):
     if not pki:
+        cleanup_system_ca()
         return None
+
+    # Create or cleanup CA install directory
+    if 'changed' in pki and 'ca' in pki['changed']:
+        cleanup_system_ca()
+
+        if 'ca' in pki:
+            for ca, ca_conf in pki['ca'].items():
+                if 'system_install' in ca_conf:
+                    ca_obj = load_certificate(ca_conf['certificate'])
+                    ca_path = os.path.join(vyos_ca_certificates_dir, f'{ca}.crt')
+
+                    with open(ca_path, 'w') as f:
+                        f.write(encode_certificate(ca_obj))
 
     # Certbot renewal only needs to re-trigger the services to load up the
     # new PEM file
     if 'certbot_renew' in pki:
-        return None
+        force = 'force' in pki['certbot_renew']
+        return certbot_renew(config=pki, force=force)
 
     certbot_list = []
     certbot_list_on_disk = []
@@ -433,22 +561,58 @@ def generate(pki):
         for name, cert_conf in pki['certificate'].items():
             if 'acme' in cert_conf:
                 certbot_list.append(name)
-                # generate certificate if not found on disk
+                # There is no ACME/certbot managed certificate presend on the
+                # system, generate it
                 if name not in certbot_list_on_disk:
                     certbot_request(name, cert_conf['acme'], dry_run=False)
+                    # Now that the certificate was properly generated we have
+                    # the PEM files on disk. We need to add the certificate to
+                    # certbot_list_on_disk to automatically import the CA chain
+                    certbot_list_on_disk.append(name)
+                # We already had an ACME managed certificate on the system, but
+                # something changed in the configuration
                 elif changed_certificates != None and name in changed_certificates:
-                    # when something for the certificate changed, we should delete it
+                    # Delete old ACME certificate first
                     if name in certbot_list_on_disk:
                         certbot_delete(name)
+                    # Request new certificate via certbot
                     certbot_request(name, cert_conf['acme'], dry_run=False)
 
     # Cleanup certbot configuration and certificates if no longer in use by CLI
     # Get foldernames under vyos_certbot_dir which each represent a certbot cert
     if os.path.exists(f'{vyos_certbot_dir}/live'):
         for cert in certbot_list_on_disk:
+            # ACME certificate is no longer in use by CLI remove it
             if cert not in certbot_list:
-                # certificate is no longer active on the CLI - remove it
                 certbot_delete(cert)
+                continue
+            # ACME not enabled for individual certificate - bail out early
+            if 'acme' not in pki['certificate'][cert]:
+                continue
+
+            # Read in ACME certificate chain information
+            tmp = read_file(f'{vyos_certbot_dir}/live/{cert}/chain.pem')
+            tmp = load_certificate(tmp, wrap_tags=False)
+            cert_chain_base64 = "".join(encode_certificate(tmp).strip().split("\n")[1:-1])
+
+            # Check if CA chain certificate is already present on CLI to avoid adding
+            # a duplicate. This only checks for manual added CA certificates and not
+            # auto added ones with the AUTOCHAIN_ prefix
+            autochain_prefix = 'AUTOCHAIN_'
+            ca_cert_present = False
+            if 'ca' in pki:
+                for ca_base64, cli_path in dict_search_recursive(pki['ca'], 'certificate'):
+                    # Ignore automatic added CA certificates
+                    if any(item.startswith(autochain_prefix) for item in cli_path):
+                        continue
+                    if cert_chain_base64 == ca_base64:
+                        ca_cert_present = True
+
+            if not ca_cert_present:
+                tmp = dict_search_args(pki, 'ca', f'{autochain_prefix}{cert}', 'certificate')
+                if not bool(tmp) or tmp != cert_chain_base64:
+                    Message(f'Add/replace automatically imported CA certificate for "{cert}" ...')
+                    add_cli_node(['pki', 'ca', f'{autochain_prefix}{cert}', 'certificate'], value=cert_chain_base64)
 
     return None
 
@@ -456,6 +620,7 @@ def apply(pki):
     systemd_certbot_name = 'certbot.timer'
     if not pki:
         call(f'systemctl stop {systemd_certbot_name}')
+        call('update-ca-certificates')
         return None
 
     has_certbot = False
@@ -472,6 +637,10 @@ def apply(pki):
 
     if 'changed' in pki:
         call_dependents()
+
+        # Rebuild ca-certificates bundle
+        if 'ca' in pki['changed']:
+            call('update-ca-certificates')
 
     return None
 

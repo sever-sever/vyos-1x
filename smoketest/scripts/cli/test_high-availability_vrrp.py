@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -50,6 +50,8 @@ class TestVRRP(VyOSUnitTestSHIM.TestCase):
 
         # Process must be terminated after deleting the config
         self.assertFalse(process_named_running(PROCESS_NAME))
+        # always forward to base class
+        super().tearDown()
 
     def test_01_default_values(self):
         for group in groups:
@@ -135,6 +137,9 @@ class TestVRRP(VyOSUnitTestSHIM.TestCase):
         self.cli_set(global_param_base + ['garp', 'master-refresh-repeat', f'{garp_master_refresh_repeat}'])
         self.cli_set(global_param_base + ['version', vrrp_version])
 
+        # SNMP
+        self.cli_set(base_path + ['vrrp', 'snmp', 'trap'])
+
         # commit changes
         self.cli_commit()
 
@@ -147,6 +152,7 @@ class TestVRRP(VyOSUnitTestSHIM.TestCase):
         self.assertIn(f'vrrp_garp_master_refresh {garp_master_refresh}', config)
         self.assertIn(f'vrrp_garp_master_refresh_repeat {garp_master_refresh_repeat}', config)
         self.assertIn(f'vrrp_version {vrrp_version}', config)
+        self.assertIn('enable_traps', config)
 
         for group in groups:
             vlan_id = group.lstrip('VLAN')
@@ -171,6 +177,14 @@ class TestVRRP(VyOSUnitTestSHIM.TestCase):
             self.assertIn(f'garp_master_delay {group_garp_master_delay}', config)
             self.assertIn(f'garp_master_refresh {group_garp_master_refresh}', config)
             self.assertIn(f'garp_master_repeat {group_garp_master_repeat}', config)
+
+        # Remove SNMP traps
+        self.cli_delete(base_path + ['vrrp', 'snmp', 'trap'])
+
+        # commit changes
+        self.cli_commit()
+        config = getConfig(f'global_defs')
+        self.assertNotIn('enable_traps', config)
 
     def test_03_sync_group(self):
         sync_group = 'VyOS'
@@ -265,6 +279,7 @@ class TestVRRP(VyOSUnitTestSHIM.TestCase):
 
     def test_check_health_script(self):
         sync_group = 'VyOS'
+        timeout = '100'
 
         for group in groups:
             vlan_id = group.lstrip('VLAN')
@@ -315,6 +330,16 @@ class TestVRRP(VyOSUnitTestSHIM.TestCase):
         config = getConfig(f'vrrp_sync_group {sync_group}')
         self.assertIn(f'track_script', config)
 
+        self.cli_set(
+            base_path
+            + ['vrrp', 'sync-group', sync_group, 'health-check', 'timeout', timeout]
+        )
+        # commit changes
+        self.cli_commit()
+
+        config = getConfig(f'vrrp_script healthcheck_sg_{sync_group}')
+        self.assertIn(f'timeout {timeout}', config)
+
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

@@ -57,25 +57,8 @@
         <properties>
           <help>Restart (net)flow accounting process</help>
         </properties>
-        <command>sudo ${vyos_op_scripts_dir}/flow_accounting_op.py --action restart</command>
+        <command>${vyos_op_scripts_dir}/flow_accounting_op.py --action restart</command>
       </leafNode>
-    </children>
-  </node>
-  <node name="clear">
-    <children>
-      <node name="flow-accounting">
-        <properties>
-          <help>Clear flow accounting</help>
-        </properties>
-        <children>
-          <leafNode name="counters">
-            <properties>
-              <help>Clear flow accounting statistics</help>
-            </properties>
-            <command>${vyos_op_scripts_dir}/flow_accounting_op.py --action clear</command>
-          </leafNode>
-        </children>
-      </node>
     </children>
   </node>
 </interfaceDefinition>

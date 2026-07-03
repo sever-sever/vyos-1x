@@ -70,6 +70,7 @@
                           <constraintErrorMessage>VLAN IDs need to be in range 1-4094</constraintErrorMessage>
                         </properties>
                       </leafNode>
+                      #include <include/ip-address.xml.i>
                     </children>
                   </tagNode>
                 </children>
@@ -131,6 +132,30 @@
                 </properties>
                 <defaultValue>shared</defaultValue>
               </leafNode>
+              <leafNode name="start-session">
+                <properties>
+                  <help>Start session options</help>
+                  <completionHelp>
+                    <list>auto dhcp unclassified-packet</list>
+                  </completionHelp>
+                  <valueHelp>
+                    <format>auto</format>
+                    <description>Start session with username as the interface name</description>
+                  </valueHelp>
+                  <valueHelp>
+                    <format>dhcp</format>
+                    <description>Start session on DHCPv4 Discover</description>
+                  </valueHelp>
+                  <valueHelp>
+                    <format>unclassified-packet</format>
+                    <description>Start session on unclassified-packet</description>
+                  </valueHelp>
+                  <constraint>
+                    <regex>(auto|dhcp|unclassified-packet)</regex>
+                  </constraint>
+                </properties>
+                <defaultValue>dhcp</defaultValue>
+              </leafNode>
               <leafNode name="client-subnet">
                 <properties>
                   <help>Client address pool</help>
@@ -174,19 +199,46 @@
                   </leafNode>
                 </children>
               </node>
+              <leafNode name="lua-username">
+                <properties>
+                  <help>Username function</help>
+                  <valueHelp>
+                    <format>txt</format>
+                    <description>Name of the function in the Lua file to construct usernames with</description>
+                  </valueHelp>
+                  <constraint>
+                      #include <include/constraint/alpha-numeric-hyphen-underscore.xml.i>
+                  </constraint>
+                </properties>
+              </leafNode>
               #include <include/accel-ppp/vlan.xml.i>
+              #include <include/accel-ppp/vlan-mon.xml.i>
             </children>
           </tagNode>
+          <leafNode name="lua-file">
+            <properties>
+              <help>Lua script file for constructing user names</help>
+              <valueHelp>
+                <format>filename</format>
+                <description>File with Lua script in /config/scripts directory</description>
+              </valueHelp>
+              <constraint>
+                <validator name="file-path" argument="--strict --parent-dir /config/scripts"/>
+              </constraint>
+            </properties>
+          </leafNode>
           #include <include/accel-ppp/client-ip-pool.xml.i>
           #include <include/accel-ppp/client-ipv6-pool.xml.i>
           #include <include/accel-ppp/default-pool.xml.i>
           #include <include/accel-ppp/default-ipv6-pool.xml.i>
           #include <include/accel-ppp/extended-scripts.xml.i>
           #include <include/accel-ppp/gateway-address-multi.xml.i>
+          #include <include/accel-ppp/idle-timeout.xml.i>
           #include <include/accel-ppp/limits.xml.i>
           #include <include/accel-ppp/max-concurrent-sessions.xml.i>
           #include <include/accel-ppp/shaper.xml.i>
           #include <include/accel-ppp/snmp.xml.i>
+          #include <include/accel-ppp/thread-count.xml.i>
           #include <include/generic-description.xml.i>
           #include <include/name-server-ipv4-ipv6.xml.i>
           #include <include/accel-ppp/log.xml.i>

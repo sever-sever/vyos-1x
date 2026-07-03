@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2016-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -47,7 +47,7 @@ def _format_cpus(cpu_data):
 def _get_summary_data():
     count = get_core_count()
     cpu_data = get_cpus()
-    models = [c['model name'] for c in cpu_data]
+    models = [c.get('model name', 'unknown') for c in cpu_data]
     env = {'count': count, "models": models}
 
     return env

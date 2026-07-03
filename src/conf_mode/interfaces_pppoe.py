@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -21,6 +21,9 @@ from sys import exit
 from vyos.config import Config
 from vyos.configdict import get_interface_dict
 from vyos.configdict import is_node_changed
+from vyos.configdict import is_vrf_changed
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configverify import verify_authentication
 from vyos.configverify import verify_source_interface
 from vyos.configverify import verify_vrf
@@ -36,7 +39,7 @@ airbag.enable()
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least the
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least the
     interface name will be added or a deleted flag
     """
     if config:
@@ -49,9 +52,18 @@ def get_config(config=None):
     # We should only terminate the PPPoE session if critical parameters change.
     # All parameters that can be changed on-the-fly (like interface description)
     # should not lead to a reconnect!
-    for options in ['access-concentrator', 'connect-on-demand', 'service-name',
-                    'source-interface', 'vrf', 'no-default-route',
-                    'authentication', 'host_uniq']:
+    for options in [
+        'access-concentrator',
+        'connect-on-demand',
+        'service-name',
+        'source-interface',
+        'vrf',
+        'no-default-route',
+        'authentication',
+        'host-uniq',
+        'dhcpv6-options',
+        'ipv6',
+    ]:
         if is_node_changed(conf, base + [ifname, options]):
             pppoe.update({'shutdown_required': {}})
             # bail out early - no need to further process other nodes
@@ -62,6 +74,10 @@ def get_config(config=None):
         # the old behavior if MRU is not set on the CLI.
         if 'mru' not in pppoe:
             pppoe['mru'] = pppoe['mtu']
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
 
     return pppoe
 
@@ -77,7 +93,7 @@ def verify(pppoe):
     verify_mirror_redirect(pppoe)
 
     if {'connect_on_demand', 'vrf'} <= set(pppoe):
-        raise ConfigError('On-demand dialing and VRF can not be used at the same time')
+        raise ConfigError('On-demand dialing and VRF cannot be used at the same time')
 
     # both MTU and MRU have default values, thus we do not need to check
     # if the key exists
@@ -110,6 +126,9 @@ def apply(pppoe):
             p = PPPoEIf(ifname)
             p.remove()
         call(f'systemctl stop ppp@{ifname}.service')
+        
+        # run the dependents and return
+        call_dependents()
         return None
 
     # reconnect should only be necessary when certain config options change,
@@ -130,6 +149,9 @@ def apply(pppoe):
         if os.path.isdir(f'/sys/class/net/{ifname}'):
             p = PPPoEIf(ifname)
             p.update(pppoe)
+
+    # run the dependents
+    call_dependents()
 
     return None
 

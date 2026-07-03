@@ -4,7 +4,6 @@
 # Note: The following FRR-services must be kept disabled because they are replaced by other packages in VyOS:
 #
 # pimd   Replaced by package igmpproxy.
-# nhrpd  Replaced by package opennhrp.
 # pbrd   Replaced by PBR in nftables.
 # vrrpd  Replaced by package keepalived.
 #
@@ -13,9 +12,9 @@
 # eigrp
 # sharpd
 # fabricd
-# pathd
 #
-# The zebra, mgmtd and staticd daemons are always started and can not be disabled
+#
+# The zebra, mgmtd and staticd daemons are always started and cannot be disabled
 #
 #zebra=yes
 #mgmtd=yes
@@ -30,15 +29,15 @@ isisd=yes
 pimd=no
 pim6d=yes
 ldpd=yes
-nhrpd=no
+nhrpd=yes
 eigrpd=no
 babeld=yes
 sharpd=no
 pbrd=no
 bfdd=yes
-fabricd=no
+fabricd=yes
 vrrpd=no
-pathd=no
+pathd=yes
 
 #
 # Define defaults for all services even those who shall be kept disabled.
@@ -104,9 +103,9 @@ vtysh_enable=yes
 watchfrr_enable=yes
 valgrind_enable=no
 
-#watchfrr_options=""
+watchfrr_options="--timeout={{ watchfrr_timeout }}"
 
-frr_profile="traditional"
+frr_profile="{{ profile }}"
 
 MAX_FDS={{ descriptors }}
 

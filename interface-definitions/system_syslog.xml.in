@@ -8,28 +8,17 @@
           <priority>400</priority>
         </properties>
         <children>
-          <tagNode name="user">
+          <node name="console">
             <properties>
-              <help>Logging to specific terminal of given user</help>
-              <completionHelp>
-                <path>system login user</path>
-              </completionHelp>
-              <valueHelp>
-                <format>txt</format>
-                <description>Local user account</description>
-              </valueHelp>
-              <constraint>
-                #include <include/constraint/login-username.xml.i>
-              </constraint>
-              <constraintErrorMessage>illegal characters in user</constraintErrorMessage>
+              <help>Log to system console (/dev/console)</help>
             </properties>
             <children>
               #include <include/syslog-facility.xml.i>
             </children>
-          </tagNode>
-          <tagNode name="host">
+          </node>
+          <tagNode name="remote">
             <properties>
-              <help>Logging to remote host</help>
+              <help>Log to remote host</help>
               <constraint>
                 <validator name="ip-address"/>
                 <validator name="fqdn"/>
@@ -49,11 +38,6 @@
               </valueHelp>
             </properties>
             <children>
-              #include <include/port-number.xml.i>
-              <leafNode name="port">
-                <defaultValue>514</defaultValue>
-              </leafNode>
-              #include <include/protocol-tcp-udp.xml.i>
               #include <include/syslog-facility.xml.i>
               <node name="format">
                 <properties>
@@ -62,92 +46,112 @@
                 <children>
                   <leafNode name="octet-counted">
                     <properties>
-                      <help>Allows for the transmission of all characters inside a syslog message</help>
+                      <help>Allows for the transmission of multi-line messages (TCP only)</help>
+                      <valueless/>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="include-timezone">
+                    <properties>
+                      <help>Use RFC 5424 format (with RFC 3339 timestamp and timezone)</help>
                       <valueless/>
                     </properties>
                   </leafNode>
                 </children>
               </node>
-            </children>
-          </tagNode>
-          <node name="global">
-            <properties>
-              <help>Logging to system standard location</help>
-            </properties>
-            <children>
-              #include <include/syslog-facility.xml.i>
-              <node name="marker">
+              #include <include/port-number.xml.i>
+              <leafNode name="port">
+                <defaultValue>514</defaultValue>
+              </leafNode>
+              #include <include/protocol-tcp-udp.xml.i>
+              #include <include/source-address-ipv4-ipv6.xml.i>
+              #include <include/interface/vrf.xml.i>
+              <node name="tls">
                 <properties>
-                  <help>mark messages sent to syslog</help>
+                  <help>Transport Layer Security (TLS) options for secure syslog</help>
                 </properties>
                 <children>
-                  <leafNode name="interval">
+                  <!-- CA cert help should describe trust anchor for server/client validation -->
+                  #include <include/pki/ca-certificate.xml.i>
+                  <!-- Certificate help should specify identity for mutual authentication -->
+                  #include <include/pki/certificate.xml.i>
+                  <leafNode name="auth-mode">
                     <properties>
-                      <help>time interval how often a mark message is being sent in seconds</help>
+                      <help>Specify the authentication and verification method for the remote peer's certificate during the TLS handshake</help>
+                      <completionHelp>
+                        <list>anon fingerprint certvalid name</list>
+                      </completionHelp>
+                      <valueHelp>
+                        <format>anon</format>
+                        <description>Allow encrypted connection without verifying the peer's identity (anonymous TLS)</description>
+                      </valueHelp>
+                      <valueHelp>
+                        <format>fingerprint</format>
+                        <description>Authenticate peer by matching its certificate fingerprint to a configured, permitted list (`permitted-peer` option)</description>
+                      </valueHelp>
+                      <valueHelp>
+                        <format>certvalid</format>
+                        <description>Authenticate peer if it presents a certificate signed by a trusted CA</description>
+                      </valueHelp>
+                      <valueHelp>
+                        <format>name</format>
+                        <description>Authenticate peer by verifying its certificate subject name against a configured value (`permitted-peer` option)</description>
+                      </valueHelp>
                       <constraint>
-                        <validator name="numeric" argument="--positive"/>
+                        <regex>(anon|fingerprint|certvalid|name)</regex>
                       </constraint>
                     </properties>
-                    <defaultValue>1200</defaultValue>
+                    <defaultValue>anon</defaultValue>
+                  </leafNode>
+                  <leafNode name="permitted-peer">
+                    <properties>
+                      <help>Allowed peer certificate fingerprint or subject name</help>
+                      <valueHelp>
+                        <format>txt</format>
+                        <description>Peer fingerprint - SHA1:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX:XX or subject name - logs.example.com</description>
+                      </valueHelp>
+                      <multi/>
+                    </properties>
                   </leafNode>
                 </children>
               </node>
-              <leafNode name="preserve-fqdn">
+            </children>
+          </tagNode>
+          <node name="local">
+            <properties>
+              <help>Log to standard system location /var/log/messages</help>
+            </properties>
+            <children>
+              #include <include/syslog-facility.xml.i>
+            </children>
+          </node>
+          <node name="marker">
+            <properties>
+              <help>Mark messages sent to syslog</help>
+            </properties>
+            <children>
+              #include <include/generic-disable-node.xml.i>
+              <leafNode name="interval">
                 <properties>
-                  <help>uses FQDN for logging</help>
-                  <valueless/>
+                  <help>Mark message interval</help>
+                  <valueHelp>
+                    <format>u32:1-65535</format>
+                    <description>Time in seconds</description>
+                  </valueHelp>
+                  <constraint>
+                    <validator name="numeric" argument="--range 1-65535"/>
+                  </constraint>
+                  <constraintErrorMessage>Port number must be in range 1 to 65535</constraintErrorMessage>
                 </properties>
+                <defaultValue>1200</defaultValue>
               </leafNode>
             </children>
           </node>
-          <tagNode name="file">
+          <leafNode name="preserve-fqdn">
             <properties>
-              <help>Logging to a file</help>
-              <constraint>
-                <regex>[a-zA-Z0-9\-_.]{1,255}</regex>
-              </constraint>
-              <constraintErrorMessage>illegal characters in filename or filename longer than 255 characters</constraintErrorMessage>
+              <help>Always include domain portion in hostname</help>
+              <valueless/>
             </properties>
-            <children>
-              <node name="archive">
-                <properties>
-                  <help>Log file size and rotation characteristics</help>
-                </properties>
-                <children>
-                  <leafNode name="file">
-                    <properties>
-                      <help>Number of saved files</help>
-                      <constraint>
-                        <regex>[0-9]+</regex>
-                      </constraint>
-                      <constraintErrorMessage>illegal characters in number of files</constraintErrorMessage>
-                    </properties>
-                    <defaultValue>5</defaultValue>
-                  </leafNode>
-                  <leafNode name="size">
-                    <properties>
-                      <help>Size of log files in kbytes</help>
-                      <constraint>
-                        <regex>[0-9]+</regex>
-                      </constraint>
-                      <constraintErrorMessage>illegal characters in size</constraintErrorMessage>
-                    </properties>
-                    <defaultValue>256</defaultValue>
-                  </leafNode>
-                </children>
-              </node>
-              #include <include/syslog-facility.xml.i>
-            </children>
-          </tagNode>
-          <node name="console">
-            <properties>
-              <help>logging to serial console</help>
-            </properties>
-            <children>
-              #include <include/syslog-facility.xml.i>
-            </children>
-          </node>
-          #include <include/interface/vrf.xml.i>
+          </leafNode>
         </children>
       </node>
     </children>

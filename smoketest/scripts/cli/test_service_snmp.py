@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2021 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -20,16 +20,22 @@ import unittest
 from base_vyostest_shim import VyOSUnitTestSHIM
 
 from vyos.configsession import ConfigSessionError
-from vyos.template import is_ipv4
+from vyos.defaults import systemd_services
 from vyos.template import address_from_cidr
+from vyos.template import bracketize_ipv6
+from vyos.template import is_ipv4
+from vyos.template import is_ipv6
+from vyos.utils.process import cmd
 from vyos.utils.process import call
 from vyos.utils.process import DEVNULL
 from vyos.utils.file import read_file
 from vyos.utils.process import process_named_running
 from vyos.version import get_version_data
+from vyos.xml_ref import default_value
 
 PROCESS_NAME = 'snmpd'
 SNMPD_CONF = '/etc/snmp/snmpd.conf'
+SYSTEMD_SERVICE = systemd_services['snmpd']
 
 base_path = ['service', 'snmp']
 
@@ -46,6 +52,20 @@ def get_config_value(key):
     tmp = re.findall(r'\n?{}\s+(.*)'.format(key), tmp)
     return tmp[0]
 
+
+def get_engine_boots() -> int:
+    """Query engineBoots directly from the running snmpd via SNMP"""
+
+    engine_boots_oid = '1.3.6.1.6.3.10.2.1.2.0'
+    out = cmd(
+        f'snmpget -v3 -u {snmpv3_user} -l authPriv '
+        f'-a SHA -A {snmpv3_auth_pw} '
+        f'-x AES -X {snmpv3_priv_pw} '
+        f'127.0.0.1 {engine_boots_oid}'
+    )
+    # Output: SNMP-FRAMEWORK-MIB::snmpEngineBoots.0 = INTEGER: 3
+    return int(out.split()[-1]) if 'snmpEngineBoots' in out else 0
+
 class TestSNMPService(VyOSUnitTestSHIM.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -58,13 +78,13 @@ class TestSNMPService(VyOSUnitTestSHIM.TestCase):
     def tearDown(self):
         # Check for running process
         self.assertTrue(process_named_running(PROCESS_NAME))
-
         # delete testing SNMP config
         self.cli_delete(base_path)
         self.cli_commit()
-
         # Check for running process
         self.assertFalse(process_named_running(PROCESS_NAME))
+        # always forward to base class
+        super().tearDown()
 
     def test_snmp_basic(self):
         dummy_if = 'dum7312'
@@ -98,7 +118,7 @@ class TestSNMPService(VyOSUnitTestSHIM.TestCase):
 
         # verify listen address, it will be returned as
         # ['unix:/run/snmpd.socket,udp:127.0.0.1:161,udp6:[::1]:161']
-        # thus we need to transfor this into a proper list
+        # thus we need to transform this into a proper list
         config = get_config_value('agentaddress')
         expected = 'unix:/run/snmpd.socket'
         self.assertIn(expected, config)
@@ -199,7 +219,7 @@ class TestSNMPService(VyOSUnitTestSHIM.TestCase):
         self.cli_set(base_path + ['v3', 'user', 'vyos', 'group', snmpv3_group])
 
         self.cli_set(base_path + ['v3', 'group', snmpv3_group, 'mode', 'ro'])
-        # check validate() - a view must be created before this can be comitted
+        # check validate() - a view must be created before this can be committed
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
 
@@ -246,6 +266,36 @@ class TestSNMPService(VyOSUnitTestSHIM.TestCase):
         for excluded in snmpv3_view_oid_exclude:
             self.assertIn(f'view {snmpv3_view} excluded .{excluded}', tmp)
 
+    def test_snmpv3_trap(self):
+        trap_targets = ['192.0.2.55', '2001:db8::1']
+
+        self.cli_set(base_path + ['v3', 'engineid', snmpv3_engine_id])
+        self.cli_set(base_path + ['v3', 'group', snmpv3_group, 'view', snmpv3_view])
+        self.cli_set(base_path + ['v3', 'view', snmpv3_view, 'oid', snmpv3_view_oid])
+
+        for trap_target in trap_targets:
+            trap_base = base_path + ['v3', 'trap-target', trap_target]
+
+            self.cli_set(trap_base + ['auth', 'plaintext-password', snmpv3_auth_pw])
+            self.cli_set(trap_base + ['auth', 'type', 'sha'])
+            self.cli_set(trap_base + ['privacy', 'plaintext-password', snmpv3_priv_pw])
+            self.cli_set(trap_base + ['privacy', 'type', 'aes'])
+            self.cli_set(trap_base + ['type', 'trap'])
+            self.cli_set(trap_base + ['user', snmpv3_user])
+
+        self.cli_commit()
+
+        tmp = read_file(SNMPD_CONF)
+        for trap_target in trap_targets:
+            cli_default_trap_port = default_value(base_path + ['v3', 'trap-target', trap_target, 'port'])
+            cli_default_trap_protocol = default_value(base_path + ['v3', 'trap-target', trap_target, 'protocol'])
+            if is_ipv6(trap_target):
+                cli_default_trap_protocol = f'{cli_default_trap_protocol}6'
+
+            self.assertIn(f'trapsess -v 3  -e "{snmpv3_engine_id}" -u {snmpv3_user} -a SHA -A {snmpv3_auth_pw} ' \
+                          f'-x AES -X {snmpv3_priv_pw} -l authPriv ' \
+                          f'{cli_default_trap_protocol}:{bracketize_ipv6(trap_target)}:{cli_default_trap_port}', tmp)
+
     def test_snmp_script_extensions(self):
         extensions = {
             'default': 'snmp_smoketest_extension_script.sh',
@@ -259,6 +309,105 @@ class TestSNMPService(VyOSUnitTestSHIM.TestCase):
         self.assertEqual(get_config_value('extend default'), f'/config/user-data/{extensions["default"]}')
         self.assertEqual(get_config_value('extend external'), extensions["external"])
 
+    def test_snmp_engine_boots_increment(self):
+        # T8538: engineBoots must increment by 1 on every snmpd restart.
+
+        snmpd_file = '/var/lib/snmp/snmpd.conf'
+        persist_file = '/config/snmp/engineboots.count'
+
+        def _verify_engine_boots(value_before, value_after):
+            lib_snmpd_content = read_file(snmpd_file, sudo=True)
+            persist_count_content = read_file(persist_file)
+
+            with self.subTest(value_before=value_before, value_after=value_after):
+                self.assertGreater(
+                    value_after,
+                    value_before,
+                    'engineBoots must increase after snmpd restart',
+                )
+                self.assertIn(
+                    f'engineBoots {value_after}\n',
+                    lib_snmpd_content,
+                    f'{snmpd_file} does not contain `engineBoots {value_after}`',
+                )
+                self.assertEqual(
+                    str(value_after),
+                    persist_count_content,
+                    f'{persist_file} does not match the expected value `{value_after}`',
+                )
+
+        self.cli_set(base_path + ['v3', 'engineid', snmpv3_engine_id])
+        self.cli_set(base_path + ['v3', 'group', 'default', 'mode', 'ro'])
+        self.cli_set(base_path + ['v3', 'view', 'default', 'oid', '1'])
+        self.cli_set(base_path + ['v3', 'group', 'default', 'view', 'default'])
+
+        base_user_path = base_path + ['v3', 'user', snmpv3_user]
+        self.cli_set(base_user_path + ['auth', 'plaintext-password', snmpv3_auth_pw])
+        self.cli_set(base_user_path + ['auth', 'type', 'sha'])
+        self.cli_set(base_user_path + ['privacy', 'plaintext-password', snmpv3_priv_pw])
+        self.cli_set(base_user_path + ['privacy', 'type', 'aes'])
+        self.cli_set(base_user_path + ['group', 'default'])
+        self.cli_commit()
+
+        value_before = get_engine_boots()
+
+        # Simulates multiple commits (which stop/start snmpd) and checks
+        # the live OID value increases monotonically.
+        self.cli_set(base_path + ['v3', 'view', 'default', 'oid', '2'])
+        self.cli_commit()
+
+        value_after = get_engine_boots()
+        _verify_engine_boots(value_before, value_after)
+
+        value_before = get_engine_boots()
+
+        # Restart of the service also should trigger changing of engineBoots
+        call(f'sudo systemctl restart {SYSTEMD_SERVICE}')
+
+        value_after = get_engine_boots()
+        _verify_engine_boots(value_before, value_after)
+
+    def test_snmp_engine_boots_reset(self):
+        # T8538: engineBoots should be set to zero on every changing of engineID
+
+        self.cli_set(base_path + ['v3', 'engineid', snmpv3_engine_id])
+        self.cli_set(base_path + ['v3', 'group', 'default', 'mode', 'ro'])
+        self.cli_set(base_path + ['v3', 'view', 'default', 'oid', '1'])
+        self.cli_set(base_path + ['v3', 'group', 'default', 'view', 'default'])
+
+        base_user_path = base_path + ['v3', 'user', snmpv3_user]
+        self.cli_set(base_user_path + ['auth', 'plaintext-password', snmpv3_auth_pw])
+        self.cli_set(base_user_path + ['auth', 'type', 'sha'])
+        self.cli_set(base_user_path + ['privacy', 'plaintext-password', snmpv3_priv_pw])
+        self.cli_set(base_user_path + ['privacy', 'type', 'aes'])
+        self.cli_set(base_user_path + ['group', 'default'])
+        self.cli_commit()
+
+        # Restart of the service to trigger changing of engineBoots
+        call(f'sudo systemctl restart {SYSTEMD_SERVICE}')
+
+        value_before = get_engine_boots()
+        self.assertGreater(
+            value_before,
+            1,
+            f'engineBoots should be greater 1 after restart of {SYSTEMD_SERVICE}',
+        )
+
+        new_snmpv3_engine_id = '000000000000000000000004'
+        self.cli_set(base_path + ['v3', 'engineid', new_snmpv3_engine_id])
+        # Re-add passwords because they were hashed by old engine id
+        self.cli_set(base_user_path + ['auth', 'plaintext-password', snmpv3_auth_pw])
+        self.cli_set(base_user_path + ['privacy', 'plaintext-password', snmpv3_priv_pw])
+        self.cli_commit()
+
+        value_after = get_engine_boots()
+        self.assertEqual(
+            value_after,
+            1,
+            'engineBoots should be set to zero on every changing of engineID',
+        )
+
+
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

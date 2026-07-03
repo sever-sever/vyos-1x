@@ -1,4 +1,4 @@
-# Copyright 2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this library.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Optional, Union, Any, TYPE_CHECKING
+from typing import Tuple, Optional, Union, Any, TYPE_CHECKING
 
 # https://peps.python.org/pep-0484/#forward-references
 # for type 'ConfigDict'
@@ -90,6 +90,32 @@ class Xml:
         res = self._get_ref_node_data(node, 'node_type')
         return res == 'tag'
 
+    def exists(self, path: list) -> bool:
+        try:
+            _ = self._get_ref_path(path)
+            return True
+        except ValueError:
+            return False
+
+    def split_path(self, path: list) -> Tuple[list, Optional[str]]:
+        """ Splits a list into config path and value components """
+
+        # First, check if the complete path is valid by itself
+        if self.exists(path):
+            if self.is_valueless(path) or not self.is_leaf(path):
+                # It's a complete path for a valueless node
+                # or a path to an empty non-leaf node
+                return (path, None)
+            else:
+                raise ValueError(f'Path "{path}" needs a value or children')
+        else:
+            # If the complete path doesn't exist, it's probably a path with a value
+            if self.exists(path[0:-1]):
+                return (path[0:-1], path[-1])
+            else:
+                # Or not a valid path at all
+                raise ValueError(f'Path "{path}" is incorrect')
+
     def is_tag(self, path: list) -> bool:
         ref_path = path.copy()
         d = self.ref
@@ -139,28 +165,38 @@ class Xml:
         ref_path = path.copy()
         d = self.ref
         data = ''
+        tag = ''
         while ref_path and d:
+            tag_val = ''
             d = d.get(ref_path[0], {})
             ref_path.pop(0)
             if self._is_tag_node(d) and ref_path:
+                tag_val = ref_path[0]
                 ref_path.pop(0)
             if self._is_leaf_node(d) and ref_path:
                 ref_path.pop(0)
             res = self._get_ref_node_data(d, name)
             if res is not None:
                 data = res
+                tag = tag_val
 
-        return data
+        return data, tag
 
-    def owner(self, path: list) -> str:
+    def owner(self, path: list, with_tag=False) -> str:
         from pathlib import Path
-        data = self._least_upper_data(path, 'owner')
+        data, tag = self._least_upper_data(path, 'owner')
+        tag_ext = f'_{tag}' if tag else ''
         if data:
-            data = Path(data.split()[0]).name
+            if with_tag:
+                data = Path(data.split()[0]).stem
+                data = f'{data}{tag_ext}'
+            else:
+                data = Path(data.split()[0]).name
         return data
 
     def priority(self, path: list) -> str:
-        return self._least_upper_data(path, 'priority')
+        data, _ = self._least_upper_data(path, 'priority')
+        return data
 
     @staticmethod
     def _dict_get(d: dict, path: list) -> dict:

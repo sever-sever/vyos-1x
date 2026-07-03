@@ -1,4 +1,4 @@
-# Copyright 2022 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -14,6 +14,7 @@
 # License along with this library.  If not, see <http://www.gnu.org/licenses/>.
 
 from vyos.qos.base import QoSBase
+
 
 class RoundRobin(QoSBase):
     _parent = 1
@@ -34,11 +35,21 @@ class RoundRobin(QoSBase):
 
         if 'default' in config:
             class_id_max = self._get_class_max_id(config)
-            default_cls_id = int(class_id_max) +1
+            default_cls_id = int(class_id_max) + 1 if class_id_max else 1
 
             # class ID via CLI is in range 1-4095, thus 1000 hex = 4096
             tmp = f'tc class replace dev {self._interface} parent 1:1 classid 1:{default_cls_id:x} drr'
             self._cmd(tmp)
+
+            # You need to add at least one filter to classify packets
+            # otherwise, all packets will be dropped.
+            filter_cmd = (
+                f'tc filter replace dev {self._interface} '
+                f'parent {self._parent:x}: prio {default_cls_id} protocol all '
+                'u32 match u32 0 0 '
+                f'flowid {self._parent}:{default_cls_id}'
+            )
+            self._cmd(filter_cmd)
 
         # call base class
         super().update(config, direction, priority=True)

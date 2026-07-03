@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -24,9 +24,20 @@ from vyos.utils.process import cmd
 base_path = ['policy']
 
 class TestPolicy(VyOSUnitTestSHIM.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super(TestPolicy, cls).setUpClass()
+
+        # ensure we can also run this test on a live system - so lets clean
+        # out the current configuration :)
+        cls.cli_delete(cls, base_path)
+        cls.cli_delete(cls, ['vrf'])
+
     def tearDown(self):
         self.cli_delete(base_path)
         self.cli_commit()
+        # always forward to base class
+        super().tearDown()
 
     def test_access_list(self):
         acls = {
@@ -112,7 +123,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('access-list', end='')
+        config = self.getFRRconfig('access-list', end_marker='')
         for acl, acl_config in acls.items():
             for rule, rule_config in acl_config['rule'].items():
                 tmp = f'access-list {acl} seq {rule}'
@@ -203,7 +214,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('ipv6 access-list', end='')
+        config = self.getFRRconfig('ipv6 access-list', end_marker='')
         for acl, acl_config in acls.items():
             for rule, rule_config in acl_config['rule'].items():
                 tmp = f'ipv6 access-list {acl} seq {rule}'
@@ -301,7 +312,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('bgp as-path access-list', end='')
+        config = self.getFRRconfig('bgp as-path access-list', end_marker='')
         for as_path, as_path_config in test_data.items():
             if 'rule' not in as_path_config:
                 continue
@@ -359,7 +370,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('bgp community-list', end='')
+        config = self.getFRRconfig('bgp community-list', end_marker='')
         for comm_list, comm_list_config in test_data.items():
             if 'rule' not in comm_list_config:
                 continue
@@ -417,7 +428,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('bgp extcommunity-list', end='')
+        config = self.getFRRconfig('bgp extcommunity-list', end_marker='')
         for comm_list, comm_list_config in test_data.items():
             if 'rule' not in comm_list_config:
                 continue
@@ -482,7 +493,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('bgp large-community-list', end='')
+        config = self.getFRRconfig('bgp large-community-list', end_marker='')
         for comm_list, comm_list_config in test_data.items():
             if 'rule' not in comm_list_config:
                 continue
@@ -560,7 +571,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('ip prefix-list', end='')
+        config = self.getFRRconfig('ip prefix-list', end_marker='')
         for prefix_list, prefix_list_config in test_data.items():
             if 'rule' not in prefix_list_config:
                 continue
@@ -643,7 +654,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('ipv6 prefix-list', end='')
+        config = self.getFRRconfig('ipv6 prefix-list', end_marker='')
         for prefix_list, prefix_list_config in test_data.items():
             if 'rule' not in prefix_list_config:
                 continue
@@ -694,10 +705,61 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         self.cli_commit()
 
-        config = self.getFRRconfig('ip prefix-list', end='')
+        config = self.getFRRconfig('ip prefix-list', end_marker='')
         for rule in test_range:
             tmp = f'ip prefix-list {prefix_list} seq {rule} permit {prefix} le {rule}'
             self.assertIn(tmp, config)
+
+    def test_prefix_list_ge_le_validation(self):
+        # FRR requires mask_length <= ge <= le for prefix-list rules
+        base = base_path + ['prefix-list', 'getest', 'rule', '10']
+        base6 = base_path + ['prefix-list6', 'getest6', 'rule', '10']
+
+        # ge < mask_length should be rejected
+        self.cli_set(base + ['action', 'permit'])
+        self.cli_set(base + ['prefix', '192.0.2.0/24'])
+        self.cli_set(base + ['ge', '16'])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_delete(base + ['ge'])
+
+        # le < mask_length should be rejected
+        self.cli_set(base + ['le', '16'])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_delete(base + ['le'])
+
+        # ge > le should be rejected
+        self.cli_set(base + ['ge', '28'])
+        self.cli_set(base + ['le', '26'])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_delete(base + ['ge'])
+        self.cli_delete(base + ['le'])
+
+        # valid ge <= le >= mask_length should commit
+        self.cli_set(base + ['ge', '25'])
+        self.cli_set(base + ['le', '28'])
+        self.cli_commit()
+        self.cli_delete(base_path + ['prefix-list', 'getest'])
+
+        # same checks for prefix-list6
+        self.cli_set(base6 + ['action', 'permit'])
+        self.cli_set(base6 + ['prefix', '2a06:9801:2c0::/44'])
+        self.cli_set(base6 + ['ge', '48'])
+        self.cli_set(base6 + ['le', '44'])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_delete(base6 + ['ge'])
+        self.cli_delete(base6 + ['le'])
+
+        # valid IPv6 ge/le
+        self.cli_set(base6 + ['ge', '48'])
+        self.cli_set(base6 + ['le', '64'])
+        self.cli_commit()
+        self.cli_delete(base_path + ['prefix-list6', 'getest6'])
+        self.cli_commit()
+
     def test_route_map_community_set(self):
         test_data = {
             "community-configuration": {
@@ -831,7 +893,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                 self.assertIn(name, config)
 
                 if 'set' in rule_config:
-                    #Check community
+                    # Check community
                     if 'community' in rule_config['set']:
                         if 'none' in rule_config['set']['community']:
                             tmp = f'set community none'
@@ -844,7 +906,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                             values = ' '.join(rule_config['set']['community']['add'])
                             tmp = f'set community {values} additive'
                             self.assertIn(tmp, config)
-                    #Check large-community
+                    # Check large-community
                     if 'large-community' in rule_config['set']:
                         if 'none' in rule_config['set']['large-community']:
                             tmp = f'set large-community none'
@@ -857,7 +919,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                             values = ' '.join(rule_config['set']['large-community']['add'])
                             tmp = f'set large-community {values} additive'
                             self.assertIn(tmp, config)
-                    #Check extcommunity
+                    # Check extcommunity
                     if 'extcommunity' in rule_config['set']:
                         if 'none' in rule_config['set']['extcommunity']:
                             tmp = 'set extcommunity none'
@@ -926,12 +988,24 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                             'tag': tag,
                         },
                     },
+                    '7' : {
+                        'action' : 'deny',
+                        'match' : {
+                            'rpki-comm-invalid': '',
+                        },
+                    },
                     '10' : {
                         'action' : 'permit',
                         'match' : {
                             'community' : community_list,
                             'interface' : test_interface,
                             'rpki-not-found': '',
+                        },
+                    },
+                    '12' : {
+                        'action' : 'permit',
+                        'match' : {
+                            'rpki-comm-not-found': '',
                         },
                     },
                     '15' : {
@@ -942,6 +1016,12 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                         },
                         'on-match' : {
                             'next' : '',
+                        },
+                    },
+                    '17' : {
+                        'action' : 'permit',
+                        'match' : {
+                            'rpki-comm-valid': '',
                         },
                     },
                     '20' : {
@@ -982,14 +1062,13 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                             'peer' : peer,
                         },
                     },
-
-                    '31' : {
-                        'action' : 'permit',
-                        'match' : {
-                            'peer' : peerv6,
+                    '31': {
+                        'action': 'permit',
+                        'match': {
+                            'peer': peerv6,
+                            'source-peer': peer,
                         },
                     },
-
                     '40' : {
                         'action' : 'permit',
                         'match' : {
@@ -1137,6 +1216,16 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                     },
                 },
             },
+            'vrf-match': {
+                'rule': {
+                    '10': {
+                        'action': 'permit',
+                        'match': {
+                            'source-vrf': 'TEST',
+                        },
+                    },
+                },
+            },
         }
 
         self.cli_set(['policy', 'access-list', access_list, 'rule', '10', 'action', 'permit'])
@@ -1240,14 +1329,24 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                         self.cli_set(path + ['rule', rule, 'match', 'origin', 'incomplete'])
                     if 'peer' in rule_config['match']:
                         self.cli_set(path + ['rule', rule, 'match', 'peer', rule_config['match']['peer']])
+                    if 'source-peer' in rule_config['match']:
+                        self.cli_set(path + ['rule', rule, 'match', 'source-peer', rule_config['match']['source-peer']])
                     if 'rpki-invalid' in rule_config['match']:
                         self.cli_set(path + ['rule', rule, 'match', 'rpki', 'invalid'])
                     if 'rpki-not-found' in rule_config['match']:
                         self.cli_set(path + ['rule', rule, 'match', 'rpki', 'notfound'])
                     if 'rpki-valid' in rule_config['match']:
                         self.cli_set(path + ['rule', rule, 'match', 'rpki', 'valid'])
+                    if 'rpki-comm-invalid' in rule_config['match']:
+                        self.cli_set(path + ['rule', rule, 'match', 'rpki-extcommunity', 'invalid'])
+                    if 'rpki-comm-not-found' in rule_config['match']:
+                        self.cli_set(path + ['rule', rule, 'match', 'rpki-extcommunity', 'notfound'])
+                    if 'rpki-comm-valid' in rule_config['match']:
+                        self.cli_set(path + ['rule', rule, 'match', 'rpki-extcommunity', 'valid'])
                     if 'protocol' in rule_config['match']:
                         self.cli_set(path + ['rule', rule, 'match', 'protocol', rule_config['match']['protocol']])
+                    if 'source-vrf' in rule_config['match']:
+                        self.cli_set(path + ['rule', rule, 'match', 'source-vrf', rule_config['match']['source-vrf']])
                     if 'tag' in rule_config['match']:
                         self.cli_set(path + ['rule', rule, 'match', 'tag', rule_config['match']['tag']])
 
@@ -1414,6 +1513,9 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                     if 'peer' in rule_config['match']:
                         tmp = f'match peer {rule_config["match"]["peer"]}'
                         self.assertIn(tmp, config)
+                    if 'source-peer' in rule_config['match']:
+                        tmp = f'match src-peer {rule_config["match"]["source-peer"]}'
+                        self.assertIn(tmp, config)
                     if 'protocol' in rule_config['match']:
                         tmp = f'match source-protocol {rule_config["match"]["protocol"]}'
                         self.assertIn(tmp, config)
@@ -1425,6 +1527,18 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
                         self.assertIn(tmp, config)
                     if 'rpki-valid' in rule_config['match']:
                         tmp = f'match rpki valid'
+                        self.assertIn(tmp, config)
+                    if 'rpki-comm-invalid' in rule_config['match']:
+                        tmp = f'match rpki-extcommunity invalid'
+                        self.assertIn(tmp, config)
+                    if 'rpki-comm-not-found' in rule_config['match']:
+                        tmp = f'match rpki-extcommunity notfound'
+                        self.assertIn(tmp, config)
+                    if 'rpki-comm-valid' in rule_config['match']:
+                        tmp = f'match rpki-extcommunity valid'
+                        self.assertIn(tmp, config)
+                    if 'source-vrf' in rule_config['match']:
+                        tmp = f'match source-vrf {rule_config["match"]["source-vrf"]}'
                         self.assertIn(tmp, config)
                     if 'tag' in rule_config['match']:
                         tmp = f'match tag {rule_config["match"]["tag"]}'
@@ -1945,7 +2059,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
         local_preference = base_local_preference
         table = base_table
         for route_map in route_maps:
-            config = self.getFRRconfig(f'route-map {route_map} permit {seq}', end='')
+            config = self.getFRRconfig(f'route-map {route_map} permit {seq}', stop_section='^exit')
             self.assertIn(f' set local-preference {local_preference}', config)
             self.assertIn(f' set table {table}', config)
             local_preference += 20
@@ -1958,7 +2072,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
 
         local_preference = base_local_preference
         for route_map in route_maps:
-            config = self.getFRRconfig(f'route-map {route_map} permit {seq}', end='')
+            config = self.getFRRconfig(f'route-map {route_map} permit {seq}', stop_section='^exit')
             self.assertIn(f' set local-preference {local_preference}', config)
             local_preference += 20
 
@@ -1972,7 +2086,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
 
         for route_map in route_maps:
-            config = self.getFRRconfig(f'route-map {route_map} permit {seq}', end='')
+            config = self.getFRRconfig(f'route-map {route_map} permit {seq}', stop_section='^exit')
             self.assertIn(f' set as-path prepend {prepend}', config)
 
         for route_map in route_maps:
@@ -1981,7 +2095,7 @@ class TestPolicy(VyOSUnitTestSHIM.TestCase):
             self.cli_commit()
 
         for route_map in route_maps:
-            config = self.getFRRconfig(f'route-map {route_map} permit {seq}', end='')
+            config = self.getFRRconfig(f'route-map {route_map} permit {seq}', stop_section='^exit')
             self.assertNotIn(f' set', config)
 
 def sort_ip(output):
@@ -1991,4 +2105,4 @@ def sort_ip(output):
     return o
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

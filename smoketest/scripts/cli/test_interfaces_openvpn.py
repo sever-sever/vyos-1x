@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,7 +19,7 @@ import unittest
 
 from glob import glob
 from ipaddress import IPv4Network
-from netifaces import interfaces
+from netifaces import interfaces # pylint: disable = no-name-in-module
 
 from base_vyostest_shim import VyOSUnitTestSHIM
 
@@ -118,6 +118,9 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
         self.cli_delete(base_path)
         self.cli_commit()
 
+        # always forward to base class
+        super().tearDown()
+
     def test_openvpn_client_verify(self):
         # Create OpenVPN client interface and test verify() steps.
         interface = 'vtun2000'
@@ -173,7 +176,7 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
         self.cli_set(path + ['tls', 'ca-certificate', 'ovpn_test'])
         self.cli_set(path + ['tls', 'certificate', 'ovpn_test'])
 
-        # check validate() - can not have auth username without a password
+        # check validate() - cannot have auth username without a password
         self.cli_set(path + ['authentication', 'username', 'vyos'])
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
@@ -250,12 +253,73 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
             interface = f'vtun{ii}'
             self.assertNotIn(interface, interfaces())
 
+    def test_openvpn_client_ip_version(self):
+        # Test the client mode behavior combined with different IP protocol versions
+
+        interface = 'vtun10'
+        remote_host = '192.0.2.10'
+        remote_host_v6 = 'fd00::2:10'
+        path = base_path + [interface]
+        auth_hash = 'sha1'
+
+        # Default behavior: client uses uspecified protocol version (udp)
+        self.cli_set(path + ['device-type', 'tun'])
+        self.cli_set(path + ['encryption', 'data-ciphers', 'aes256'])
+        self.cli_set(path + ['hash', auth_hash])
+        self.cli_set(path + ['mode', 'client'])
+        self.cli_set(path + ['persistent-tunnel'])
+        self.cli_set(path + ['protocol', 'udp'])
+        self.cli_set(path + ['remote-host', remote_host])
+        self.cli_set(path + ['remote-port', remote_port])
+        self.cli_set(path + ['tls', 'ca-certificate', 'ovpn_test'])
+        self.cli_set(path + ['tls', 'certificate', 'ovpn_test'])
+        self.cli_set(path + ['vrf', vrf_name])
+        self.cli_set(path + ['authentication', 'username', interface+'user'])
+        self.cli_set(path + ['authentication', 'password', interface+'secretpw'])
+
+        self.cli_commit()
+
+        config_file = f'/run/openvpn/{interface}.conf'
+        config = read_file(config_file)
+
+        self.assertIn(f'dev vtun10', config)
+        self.assertIn(f'dev-type tun', config)
+        self.assertIn(f'persist-key', config)
+        self.assertIn(f'proto udp', config)
+        self.assertIn(f'rport {remote_port}', config)
+        self.assertIn(f'remote {remote_host}', config)
+        self.assertIn(f'persist-tun', config)
+
+        # IPv4 only: client uses udp4 protocol
+        self.cli_set(path + ['ip-version', 'ipv4'])
+        self.cli_commit()
+
+        config = read_file(config_file)
+        self.assertIn(f'proto udp4', config)
+
+        # IPv6 only: client uses udp6 protocol
+        self.cli_set(path + ['ip-version', 'ipv6'])
+        self.cli_delete(path + ['remote-host', remote_host])
+        self.cli_set(path + ['remote-host', remote_host_v6])
+        self.cli_commit()
+
+        config = read_file(config_file)
+        self.assertIn(f'proto udp6', config)
+
+        # IPv6 dual-stack: not allowed in client mode
+        self.cli_set(path + ['ip-version', 'dual-stack'])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_delete(base_path)
+        self.cli_commit()
+
     def test_openvpn_server_verify(self):
         # Create one OpenVPN server interface and check required verify() stages
         interface = 'vtun5000'
         path = base_path + [interface]
 
-        # check validate() - must speciy operating mode
+        # check validate() - must specify operating mode
         self.cli_set(path)
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
@@ -453,6 +517,74 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
             interface = f'vtun{ii}'
             self.assertNotIn(interface, interfaces())
 
+    def test_openvpn_server_ip_version(self):
+        # Test the server mode behavior combined with each IP protocol version
+
+        auth_hash = 'sha256'
+        port = '2000'
+
+        interface = 'vtun20'
+        subnet = '192.0.20.0/24'
+        path = base_path + [interface]
+
+        # Default behavior: client uses uspecified protocol version (udp)
+        self.cli_set(path + ['device-type', 'tun'])
+        self.cli_set(path + ['encryption', 'data-ciphers', 'aes192'])
+        self.cli_set(path + ['hash', auth_hash])
+        self.cli_set(path + ['mode', 'server'])
+        self.cli_set(path + ['local-port', port])
+        self.cli_set(path + ['server', 'subnet', subnet])
+        self.cli_set(path + ['server', 'topology', 'subnet'])
+
+        self.cli_set(path + ['replace-default-route'])
+        self.cli_set(path + ['tls', 'ca-certificate', 'ovpn_test'])
+        self.cli_set(path + ['tls', 'certificate', 'ovpn_test'])
+        self.cli_set(path + ['tls', 'dh-params', 'ovpn_test'])
+
+        self.cli_commit()
+
+        start_addr = inc_ip(subnet, '2')
+        stop_addr = last_host_address(subnet)
+
+        config_file = f'/run/openvpn/{interface}.conf'
+        config = read_file(config_file)
+
+        self.assertIn(f'dev {interface}', config)
+        self.assertIn(f'dev-type tun', config)
+        self.assertIn(f'persist-key', config)
+        self.assertIn(f'proto udp', config) # default protocol
+        self.assertIn(f'auth {auth_hash}', config)
+        self.assertIn(f'data-ciphers AES-192-CBC', config)
+        self.assertIn(f'topology subnet', config)
+        self.assertIn(f'lport {port}', config)
+        self.assertIn(f'push "redirect-gateway def1"', config)
+
+        # IPv4 only: server uses udp4 protocol
+        self.cli_set(path + ['ip-version', 'ipv4'])
+        self.cli_commit()
+
+        config = read_file(config_file)
+        self.assertIn(f'proto udp4', config)
+
+        # IPv6 only: server uses udp6 protocol + bind ipv6only
+        self.cli_set(path + ['ip-version', 'ipv6'])
+        self.cli_commit()
+
+        config = read_file(config_file)
+        self.assertIn(f'proto udp6', config)
+        self.assertIn(f'bind ipv6only', config)
+
+        # IPv6 dual-stack: server uses udp6 protocol without bind ipv6only
+        self.cli_set(path + ['ip-version', 'dual-stack'])
+        self.cli_commit()
+
+        config = read_file(config_file)
+        self.assertIn(f'proto udp6', config)
+        self.assertNotIn(f'bind ipv6only', config)
+
+        self.cli_delete(base_path)
+        self.cli_commit()
+
     def test_openvpn_site2site_verify(self):
         # Create one OpenVPN site2site interface and check required
         # verify() stages
@@ -509,6 +641,12 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
         self.cli_set(path + ['shared-secret-key', 'ovpn_test'])
+
+        # check validate() - Must define "encryption cipher" or "encryption
+        # data-ciphers-fallback" for site-to-site encryption
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_set(path + ['encryption', 'cipher', '3des'])
 
         self.cli_commit()
 
@@ -627,6 +765,87 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
             self.assertNotIn(interface, interfaces())
 
 
+    def test_openvpn_site2site_ip_version(self):
+        # Test the site-to-site mode behavior combined with each IP protocol version
+
+        encryption_cipher = 'aes256'
+
+        interface = 'vtun30'
+        local_address = '192.0.30.1'
+        local_address_subnet = '255.255.255.252'
+        remote_address = '172.16.30.1'
+        path = base_path + [interface]
+        port = '3030'
+
+        self.cli_set(path + ['local-address', local_address])
+        self.cli_set(path + ['device-type', 'tun'])
+        self.cli_set(path + ['mode', 'site-to-site'])
+        self.cli_set(path + ['local-port', port])
+        self.cli_set(path + ['remote-port', port])
+        self.cli_set(path + ['shared-secret-key', 'ovpn_test'])
+        self.cli_set(path + ['remote-address', remote_address])
+        self.cli_set(path + ['encryption', 'cipher', encryption_cipher])
+
+        self.cli_commit()
+
+        config_file = f'/run/openvpn/{interface}.conf'
+        config = read_file(config_file)
+
+        self.assertIn(f'dev-type tun', config)
+        self.assertIn(f'ifconfig {local_address} {remote_address}', config)
+        self.assertIn(f'proto udp', config)
+        self.assertIn(f'dev {interface}', config)
+        self.assertIn(f'secret /run/openvpn/{interface}_shared.key', config)
+        self.assertIn(f'lport {port}', config)
+        self.assertIn(f'rport {port}', config)
+
+        # IPv4 only: server uses udp4 protocol
+        self.cli_set(path + ['ip-version', 'ipv4'])
+        self.cli_commit()
+
+        config = read_file(config_file)
+        self.assertIn(f'proto udp4', config)
+
+        # IPv6 only: server uses udp6 protocol + bind ipv6only
+        self.cli_set(path + ['ip-version', 'ipv6'])
+        self.cli_commit()
+
+        config = read_file(config_file)
+        self.assertIn(f'proto udp6', config)
+        self.assertIn(f'bind ipv6only', config)
+
+        # IPv6 dual-stack: not allowed in site-to-site mode
+        self.cli_set(path + ['ip-version', 'dual-stack'])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_delete(base_path)
+        self.cli_commit()
+
+    def test_site2site_data_ciphers_fallback(self):
+        vtun_if = 'vtun2010'
+        path = ['interfaces', 'openvpn', vtun_if]
+
+        # Configure a minimal site-to-site tunnel with data-ciphers-fallback
+        self.cli_set(path + ['mode', 'site-to-site'])
+        self.cli_set(path + ['encryption', 'data-ciphers-fallback', 'aes192'])
+        self.cli_set(path + ['local-address', '10.0.1.1'])
+        self.cli_set(path + ['remote-address', '10.0.1.2'])
+        self.cli_set(path + ['shared-secret-key', 'ovpn_test'])
+
+        self.cli_commit()
+
+        config_file = f'/run/openvpn/{vtun_if}.conf'
+        config = read_file(config_file)
+
+        # Validate correct OpenVPN configuration rendering
+        self.assertIn(f'dev {vtun_if}', config)
+        self.assertIn('data-ciphers-fallback AES-192-CBC', config)
+
+        # Ensure no other directives are rendered
+        self.assertNotIn('cipher ', config)
+        self.assertNotIn('data-ciphers ', config)
+
     def test_openvpn_server_server_bridge(self):
         # Create OpenVPN server interface using bridge.
         # Validate configuration afterwards.
@@ -640,7 +859,6 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
         gw_subnet = "192.168.0.1"
 
         self.cli_set(['interfaces', 'bridge', br_if, 'member', 'interface', vtun_if])
-        self.cli_set(path + ['device-type', 'tap'])
         self.cli_set(path + ['encryption', 'data-ciphers', 'aes192'])
         self.cli_set(path + ['hash', auth_hash])
         self.cli_set(path + ['mode', 'server'])
@@ -654,6 +872,10 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
         self.cli_set(path + ['tls', 'certificate', 'ovpn_test'])
         self.cli_set(path + ['tls', 'dh-params', 'ovpn_test'])
 
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_set(path + ['device-type', 'tap'])
         self.cli_commit()
 
         config_file = f'/run/openvpn/{vtun_if}.conf'
@@ -678,5 +900,33 @@ class TestInterfacesOpenVPN(VyOSUnitTestSHIM.TestCase):
         self.cli_delete(base_path)
         self.cli_commit()
 
+    def test_openvpn_server_reject_unconfigured_clients(self):
+        # T8998: reject-unconfigured-clients without server client entries
+        # must emit both client-config-dir and ccd-exclusive
+        interface = 'vtun5020'
+        path = base_path + [interface]
+        subnet = '10.20.30.0/24'
+
+        self.cli_set(path + ['device-type', 'tun'])
+        self.cli_set(path + ['mode', 'server'])
+        self.cli_set(path + ['keep-alive', 'failure-count', '5'])
+        self.cli_set(path + ['keep-alive', 'interval', '5'])
+        self.cli_set(path + ['tls', 'ca-certificate', 'ovpn_test'])
+        self.cli_set(path + ['tls', 'certificate', 'ovpn_test'])
+        self.cli_set(path + ['tls', 'dh-params', 'ovpn_test'])
+        self.cli_set(path + ['server', 'subnet', subnet])
+        self.cli_set(path + ['server', 'reject-unconfigured-clients'])
+
+        self.cli_commit()
+
+        config_file = f'/run/openvpn/{interface}.conf'
+        config = read_file(config_file)
+
+        self.assertIn(f'client-config-dir /run/openvpn/ccd/{interface}', config)
+        self.assertIn('ccd-exclusive', config)
+
+        self.assertTrue(process_named_running(PROCESS_NAME))
+        self.assertIn(interface, interfaces())
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

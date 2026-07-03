@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -16,24 +16,33 @@
 
 import os
 
+from glob import glob
 from json import loads
 from sys import exit
 
 from vyos.base import Warning
 from vyos.config import Config
+from vyos.configdiff import Diff, get_config_diff
 from vyos.template import render
 from vyos.utils.dict import dict_search_args
+from vyos.utils.dict import dict_search_recursive
+from vyos.utils.file import write_file
+from vyos.utils.process import call
 from vyos.utils.process import cmd
 from vyos.utils.process import run
 from vyos.utils.network import get_vrf_tableid
+from vyos.utils.network import interface_exists
 from vyos.defaults import rt_global_table
 from vyos.defaults import rt_global_vrf
+from vyos.geoip import  geoip_refresh, geoip_update
 from vyos import ConfigError
 from vyos import airbag
 airbag.enable()
 
 mark_offset = 0x7FFFFFFF
 nftables_conf = '/run/nftables_policy.conf'
+domain_resolver_usage = '/run/use-vyos-domain-resolver-policy-route'
+domain_resolver_usage_glob = '/run/use-vyos-domain-resolver*'
 
 valid_groups = [
     'address_group',
@@ -42,6 +51,34 @@ valid_groups = [
     'port_group',
     'interface_group'
 ]
+
+def geoip_updated(conf):
+    D = get_config_diff(conf, key_mangling=('-', '_'))
+    for path in (['policy', 'route'], ['policy', 'route6']):
+        diff = D.get_child_nodes_diff(path,
+                                      expand_nodes=Diff.ADD | Diff.DELETE,
+                                      recursive=True)
+        if any(any(dict_search_recursive(diff.get(section, {}), 'geoip'))
+               for section in ('add', 'delete')):
+            return True
+    return False
+
+def geoip_sets(policy):
+    out = {'name': [], 'ipv6_name': []}
+
+    for _, path in dict_search_recursive(policy, 'country_code'):
+        if (path[0] == 'route'):
+            out['name'].append(f'GEOIP_CC_{path[0]}_{path[1]}_{path[3]}')
+        elif (path[0] == 'route6'):
+            out['ipv6_name'].append(f'GEOIP_CC6_{path[0]}_{path[1]}_{path[3]}')
+
+    for _, path in dict_search_recursive(policy, 'asn'):
+        if (path[0] == 'route'):
+            out['name'].append(f'GEOIP_ASN_{path[0]}_{path[1]}_{path[3]}')
+        elif (path[0] == 'route6'):
+            out['ipv6_name'].append(f'GEOIP_ASN6_{path[0]}_{path[1]}_{path[3]}')
+
+    return out
 
 def get_config(config=None):
     if config:
@@ -59,6 +96,12 @@ def get_config(config=None):
     # Remove dynamic firewall groups if present:
     if 'dynamic_group' in policy['firewall_group']:
         del policy['firewall_group']['dynamic_group']
+
+    policy['geoip_sets'] = geoip_sets(policy)
+    policy['geoip_updated'] = geoip_updated(conf)
+    policy['firewall'] = conf.get_config_dict(
+        ['firewall'], key_mangling=('-', '_'),
+        no_tag_node_value_mangle=True, get_first_key=True)
 
     return policy
 
@@ -89,6 +132,11 @@ def verify_rule(policy, name, rule_conf, ipv6, rule_id):
         if 'vrf' in rule_conf['set'] and 'table' in rule_conf['set']:
             raise ConfigError(f'{name} rule {rule_id}: Cannot set both forwarding route table and VRF')
 
+        if 'vrf' in rule_conf['set']:
+            vrf = rule_conf['set']['vrf']
+            if vrf != 'default' and not interface_exists(vrf):
+                raise ConfigError(f'{name} rule {rule_id}: VRF "{vrf}" does not exist')
+
     tcp_flags = dict_search_args(rule_conf, 'tcp', 'flags')
     if tcp_flags:
         if dict_search_args(rule_conf, 'protocol') != 'tcp':
@@ -103,6 +151,10 @@ def verify_rule(policy, name, rule_conf, ipv6, rule_id):
     for side in ['destination', 'source']:
         if side in rule_conf:
             side_conf = rule_conf[side]
+
+            if 'geoip' in side_conf:
+                if len({'asn', 'country_code'} & set(side_conf['geoip'])) > 1:
+                    raise ConfigError('Only one of asn or country-code can be specified')
 
             if 'group' in side_conf:
                 if len({'address_group', 'domain_group', 'network_group'} & set(side_conf['group'])) > 1:
@@ -149,6 +201,42 @@ def generate(policy):
 
     render(nftables_conf, 'firewall/nftables-policy.j2', policy)
     return None
+
+def domain_group_used(policy):
+    for route in ['route', 'route6']:
+        if route not in policy:
+            continue
+
+        for pol_conf in policy[route].values():
+            if 'rule' not in pol_conf:
+                continue
+
+            for rule_conf in pol_conf['rule'].values():
+                if 'disable' in rule_conf:
+                    continue
+
+                for side in ['destination', 'source']:
+                    if dict_search_args(rule_conf, side, 'group', 'domain_group') is not None:
+                        return True
+
+    return False
+
+def update_domain_resolver(policy):
+    domain_action = None
+
+    if domain_group_used(policy):
+        text = '# Automatically generated by policy_route.py\nThis file indicates that vyos-domain-resolver service is used by policy_route.\n'
+        write_file(domain_resolver_usage, text)
+        domain_action = 'restart'
+    elif os.path.exists(domain_resolver_usage):
+        os.unlink(domain_resolver_usage)
+        domain_action = 'restart'
+
+        if not glob(domain_resolver_usage_glob):
+            domain_action = 'stop'
+
+    if domain_action:
+        call(f'systemctl {domain_action} vyos-domain-resolver.service')
 
 def apply_table_marks(policy):
     for route in ['route', 'route6']:
@@ -202,6 +290,13 @@ def apply(policy):
         cleanup_table_marks()
 
     apply_table_marks(policy)
+
+    update_domain_resolver(policy)
+
+    if policy['geoip_sets']['name'] or policy['geoip_sets']['ipv6_name']:
+        if policy['geoip_updated'] or not geoip_refresh():
+            print('Updating GeoIP. Please wait...')
+            geoip_update(firewall=policy['firewall'], policy=policy)
 
     return None
 

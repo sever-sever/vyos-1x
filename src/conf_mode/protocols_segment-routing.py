@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -15,14 +15,18 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from sys import exit
+from sys import argv
 
 from vyos.config import Config
-from vyos.configdict import node_changed
-from vyos.template import render_to_string
+from vyos.configdict import list_diff
+from vyos.configverify import has_frr_protocol_in_dict
+from vyos.frrender import FRRender
+from vyos.frrender import get_frrender_dict
+from vyos.ifconfig import Section
 from vyos.utils.dict import dict_search
+from vyos.utils.process import is_systemd_service_running
 from vyos.utils.system import sysctl_write
 from vyos import ConfigError
-from vyos import frr
 from vyos import airbag
 airbag.enable()
 
@@ -32,77 +36,117 @@ def get_config(config=None):
     else:
         conf = Config()
 
-    base = ['protocols', 'segment-routing']
-    sr = conf.get_config_dict(base, key_mangling=('-', '_'),
-                              get_first_key=True,
-                              no_tag_node_value_mangle=True,
-                              with_recursive_defaults=True)
+    return get_frrender_dict(conf, argv)
 
-    # FRR has VRF support for different routing daemons. As interfaces belong
-    # to VRFs - or the global VRF, we need to check for changed interfaces so
-    # that they will be properly rendered for the FRR config. Also this eases
-    # removal of interfaces from the running configuration.
-    interfaces_removed = node_changed(conf, base + ['interface'])
-    if interfaces_removed:
-        sr['interface_removed'] = list(interfaces_removed)
-
-    import pprint
-    pprint.pprint(sr)
-    return sr
-
-def verify(sr):
-    if 'srv6' in sr:
-        srv6_enable = False
-        if 'interface' in sr:
-            for interface, interface_config in sr['interface'].items():
-                if 'srv6' in interface_config:
-                    srv6_enable = True
-                    break
-        if not srv6_enable:
-            raise ConfigError('SRv6 should be enabled on at least one interface!')
-    return None
-
-def generate(sr):
-    if not sr:
+def verify(config_dict):
+    if not has_frr_protocol_in_dict(config_dict, 'segment_routing'):
         return None
 
-    sr['new_frr_config'] = render_to_string('frr/zebra.segment_routing.frr.j2', sr)
+    sr = config_dict['segment_routing']
+
+    if 'srv6' in sr:
+        srv6_enable = False
+        for _, interface_config in dict_search('interface', sr, {}).items():
+            if 'srv6' in interface_config:
+                srv6_enable = True
+                break
+        if not srv6_enable:
+            raise ConfigError('SRv6 should be enabled on at least one interface!')
+
+    # Check for database import having more than one protocol
+    if tmp := dict_search('traffic_engineering.database_import_protocol', sr):
+        if {'isis', 'ospf'} <= set(tmp.keys()):
+            raise ConfigError('SR-TE database import: IS-IS and OSPF are mutually exclusive!')
+
+    for segment_list in dict_search('traffic_engineering.segment_list', sr, []):
+        sl_data = dict_search(f'traffic_engineering.segment_list.{segment_list}', sr)
+        indices = sl_data.get('index') if sl_data else None
+
+        if indices is None:
+            raise ConfigError(f'SR-TE segment list "{segment_list}": '\
+                               'at least one index is required!')
+
+        for index, index_data in indices.items():
+            error_msg = f'SR-TE segment list "{segment_list}", index "{index}"'
+            nai = index_data.get('nai')
+            mpls = index_data.get('mpls')
+            if not nai and not mpls:
+                raise ConfigError(f'{error_msg}: "mpls" or "nai" is required!')
+
+            if nai:
+                if 'adjacency' in nai and 'prefix' in nai:
+                    raise ConfigError(f'{error_msg}: "prefix" and "adjacency" are mutually exclusive!')
+
+                for nai_type in ('adjacency', 'prefix'):
+                    nai_data = nai.get(nai_type)
+                    if not nai_data:
+                        continue
+
+                    if 'ipv4' in nai_data and 'ipv6' in nai_data:
+                        raise ConfigError(f'{error_msg}, nai {nai_type}: "ipv4" and "ipv6" are '
+                                           'mutually exclusive!')
+
+                    for af, af_config in nai_data.items():
+                        af_ctx = f'{error_msg}, nai {nai_type} {af}'
+                        if nai_type == 'adjacency':
+                            has_src = 'source_identifier' in af_config
+                            has_dst = 'destination_identifier' in af_config
+                            if has_src != has_dst:
+                                missing = 'destination-identifier' if has_src else 'source-identifier'
+                                raise ConfigError(f'{af_ctx}: "{missing}" is required!')
+                        else:
+                            if 'prefix_identifier' not in af_config:
+                                raise ConfigError(f'{af_ctx}: "prefix-identifier" is required!')
+
+                            for pfx, pfx_data in af_config['prefix_identifier'].items():
+                                pfx_ctx = f'{af_ctx}, prefix "{pfx}"'
+                                if 'algorithm' not in pfx_data:
+                                    raise ConfigError(f'{pfx_ctx}: "algorithm" is required!')
+
+                                if alg := pfx_data.get('algorithm'):
+                                    if {'spf', 'strict_spf'} <= set(alg.keys()):
+                                        raise ConfigError(f'{pfx_ctx}: "spf" and "strict-spf" '
+                                                           'are mutually exclusive!')
+
     return None
 
-def apply(sr):
-    zebra_daemon = 'zebra'
+def generate(config_dict):
+    if config_dict and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().generate(config_dict)
+    return None
 
-    if 'interface_removed' in sr:
-        for interface in sr['interface_removed']:
-            # Disable processing of IPv6-SR packets
-            sysctl_write(f'net.ipv6.conf.{interface}.seg6_enabled', '0')
+def apply(config_dict):
+    if not has_frr_protocol_in_dict(config_dict, 'segment_routing'):
+        return None
 
-    if 'interface' in sr:
-        for interface, interface_config in sr['interface'].items():
-            # Accept or drop SR-enabled IPv6 packets on this interface
-            if 'srv6' in interface_config:
-                sysctl_write(f'net.ipv6.conf.{interface}.seg6_enabled', '1')
-                # Define HMAC policy for ingress SR-enabled packets on this interface
-                # It's a redundant check as HMAC has a default value - but better safe
-                # then sorry
-                tmp = dict_search('srv6.hmac', interface_config)
-                if tmp == 'accept':
-                    sysctl_write(f'net.ipv6.conf.{interface}.seg6_require_hmac', '0')
-                elif tmp == 'drop':
-                    sysctl_write(f'net.ipv6.conf.{interface}.seg6_require_hmac', '1')
-                elif tmp == 'ignore':
-                    sysctl_write(f'net.ipv6.conf.{interface}.seg6_require_hmac', '-1')
-            else:
-                sysctl_write(f'net.ipv6.conf.{interface}.seg6_enabled', '0')
+    sr = config_dict['segment_routing']
 
-    # Save original configuration prior to starting any commit actions
-    frr_cfg = frr.FRRConfig()
-    frr_cfg.load_configuration(zebra_daemon)
-    frr_cfg.modify_section(r'^segment-routing')
-    if 'new_frr_config' in sr:
-        frr_cfg.add_before(frr.default_add_before, sr['new_frr_config'])
-    frr_cfg.commit_configuration(zebra_daemon)
+    current_interfaces = Section.interfaces()
+    sr_interfaces = list(sr.get('interface', {}).keys())
 
+    for interface in list_diff(current_interfaces, sr_interfaces):
+        # Disable processing of IPv6-SR packets
+        sysctl_write(['net', 'ipv6', 'conf', interface, 'seg6_enabled'], '0')
+
+    for interface, interface_config in sr.get('interface', {}).items():
+        # Accept or drop SR-enabled IPv6 packets on this interface
+        if 'srv6' in interface_config:
+            sysctl_write(['net', 'ipv6', 'conf', interface, 'seg6_enabled'], '1')
+            # Define HMAC policy for ingress SR-enabled packets on this interface
+            # It's a redundant check as HMAC has a default value - but better safe
+            # then sorry
+            tmp = dict_search('srv6.hmac', interface_config)
+            if tmp == 'accept':
+                sysctl_write(['net', 'ipv6', 'conf', interface, 'seg6_require_hmac'], '0')
+            elif tmp == 'drop':
+                sysctl_write(['net', 'ipv6', 'conf', interface, 'seg6_require_hmac'], '1')
+            elif tmp == 'ignore':
+                sysctl_write(['net', 'ipv6', 'conf', interface, 'seg6_require_hmac'], '-1')
+        else:
+            sysctl_write(['net', 'ipv6', 'conf', interface, 'seg6_enabled'], '0')
+
+    if config_dict and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().apply()
     return None
 
 if __name__ == '__main__':

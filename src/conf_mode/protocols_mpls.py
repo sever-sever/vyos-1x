@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2022 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -20,36 +20,35 @@ from sys import exit
 
 from glob import glob
 from vyos.config import Config
-from vyos.template import render_to_string
+from vyos.configverify import has_frr_protocol_in_dict
+from vyos.frrender import FRRender
+from vyos.frrender import get_frrender_dict
 from vyos.utils.dict import dict_search
 from vyos.utils.file import read_file
+from vyos.utils.process import is_systemd_service_running
 from vyos.utils.system import sysctl_write
 from vyos.configverify import verify_interface_exists
 from vyos import ConfigError
-from vyos import frr
 from vyos import airbag
 airbag.enable()
-
-config_file = r'/tmp/ldpd.frr'
 
 def get_config(config=None):
     if config:
         conf = config
     else:
         conf = Config()
-    base = ['protocols', 'mpls']
 
-    mpls = conf.get_config_dict(base, key_mangling=('-', '_'), get_first_key=True)
-    return mpls
+    return get_frrender_dict(conf)
 
-def verify(mpls):
-    # If no config, then just bail out early.
-    if not mpls:
+def verify(config_dict):
+    if not has_frr_protocol_in_dict(config_dict, 'mpls'):
         return None
+
+    mpls = config_dict['mpls']
 
     if 'interface' in mpls:
         for interface in mpls['interface']:
-            verify_interface_exists(interface)
+            verify_interface_exists(mpls, interface)
 
     # Checks to see if LDP is properly configured
     if 'ldp' in mpls:
@@ -68,46 +67,39 @@ def verify(mpls):
 
     return None
 
-def generate(mpls):
-    # If there's no MPLS config generated, create dictionary key with no value.
-    if not mpls or 'deleted' in mpls:
-        return None
-
-    mpls['frr_ldpd_config'] = render_to_string('frr/ldpd.frr.j2', mpls)
+def generate(config_dict):
+    if config_dict and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().generate(config_dict)
     return None
 
-def apply(mpls):
-    ldpd_damon = 'ldpd'
+def apply(config_dict):
+    if config_dict and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().apply()
 
-    # Save original configuration prior to starting any commit actions
-    frr_cfg = frr.FRRConfig()
+    if not has_frr_protocol_in_dict(config_dict, 'mpls'):
+        return None
 
-    frr_cfg.load_configuration(ldpd_damon)
-    frr_cfg.modify_section(f'^mpls ldp', stop_pattern='^exit', remove_stop_mark=True)
-
-    if 'frr_ldpd_config' in mpls:
-        frr_cfg.add_before(frr.default_add_before, mpls['frr_ldpd_config'])
-    frr_cfg.commit_configuration(ldpd_damon)
+    mpls = config_dict['mpls']
 
     # Set number of entries in the platform label tables
     labels = '0'
     if 'interface' in mpls:
         labels = '1048575'
-    sysctl_write('net.mpls.platform_labels', labels)
+    sysctl_write(['net', 'mpls', 'platform_labels'], labels)
 
     # Check for changes in global MPLS options
     if 'parameters' in mpls:
             # Choose whether to copy IP TTL to MPLS header TTL
         if 'no_propagate_ttl' in mpls['parameters']:
-            sysctl_write('net.mpls.ip_ttl_propagate', 0)
+            sysctl_write(['net', 'mpls', 'ip_ttl_propagate'], 0)
             # Choose whether to limit maximum MPLS header TTL
         if 'maximum_ttl' in mpls['parameters']:
             ttl = mpls['parameters']['maximum_ttl']
-            sysctl_write('net.mpls.default_ttl', ttl)
+            sysctl_write(['net', 'mpls', 'default_ttl'], ttl)
     else:
         # Set default global MPLS options if not defined.
-        sysctl_write('net.mpls.ip_ttl_propagate', 1)
-        sysctl_write('net.mpls.default_ttl', 255)
+        sysctl_write(['net', 'mpls', 'ip_ttl_propagate'], 1)
+        sysctl_write(['net', 'mpls', 'default_ttl'], 255)
 
     # Enable and disable MPLS processing on interfaces per configuration
     if 'interface' in mpls:
@@ -120,20 +112,17 @@ def apply(mpls):
             interface_state = read_file(f'/proc/sys/net/mpls/conf/{system_interface}/input')
             if '1' in interface_state:
                 if system_interface not in mpls['interface']:
-                    system_interface = system_interface.replace('.', '/')
-                    sysctl_write(f'net.mpls.conf.{system_interface}.input', 0)
+                    sysctl_write(['net', 'mpls', 'conf', system_interface, 'input'], 0)
             elif '0' in interface_state:
                 if system_interface in mpls['interface']:
-                    system_interface = system_interface.replace('.', '/')
-                    sysctl_write(f'net.mpls.conf.{system_interface}.input', 1)
+                    sysctl_write(['net', 'mpls', 'conf', system_interface, 'input'], 1)
     else:
         system_interfaces = []
         # If MPLS interfaces are not configured, set MPLS processing disabled
         for interface in glob('/proc/sys/net/mpls/conf/*'):
             system_interfaces.append(os.path.basename(interface))
         for system_interface in system_interfaces:
-            system_interface = system_interface.replace('.', '/')
-            sysctl_write(f'net.mpls.conf.{system_interface}.input', 0)
+            sysctl_write(['net', 'mpls', 'conf', system_interface, 'input'], 0)
 
     return None
 

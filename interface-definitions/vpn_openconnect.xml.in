@@ -65,10 +65,41 @@
                   </leafNode>
                   <leafNode name="radius">
                     <properties>
-                      <help>Use RADIUS server for user autentication</help>
+                      <help>Use RADIUS server for user authentication</help>
                       <valueless/>
                     </properties>
                   </leafNode>
+                  <node name="certificate">
+                    <properties>
+                      <help>Use certificate-based authentication</help>
+                    </properties>
+                    <children>
+                      <leafNode name="user-identifier-field">
+                        <properties>
+                          <help>Certificate field to identify users by</help>
+                          <valueHelp>
+                            <format>cn</format>
+                            <description>OID 2.5.4.3 - Common Name</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>uid</format>
+                            <description>OID 0.9.2342.19200300.100.1.1 - UID</description>
+                          </valueHelp>
+                          <valueHelp>
+                            <format>x.x.xx.xxx</format>
+                            <description>Custom OID in dotted decimal format</description>
+                          </valueHelp>
+                          <constraint>
+                            <regex>(^\d{1,5}(?:\.\d{1,5})*$|cn|uid)</regex>
+                          </constraint>
+                          <constraintErrorMessage>Invalid OID selection. Must be cn, uid, or a valid OID format.</constraintErrorMessage>
+                          <completionHelp>
+                            <list>cn uid x.x.xx.xxx</list>
+                          </completionHelp>
+                         </properties>
+                       </leafNode>
+                     </children>
+                   </node>
                 </children>
               </node>
               <node name="identity-based-config">
@@ -216,7 +247,7 @@
                   #include <include/radius-timeout.xml.i>
                   <leafNode name="groupconfig">
                     <properties>
-                      <help>If the groupconfig option is set, then config-per-user will be overriden, and all configuration will be read from RADIUS.</help>
+                      <help>If the groupconfig option is set, then config-per-user will be overridden, and all configuration will be read from RADIUS.</help>
                     </properties>
                   </leafNode>
                 </children>
@@ -386,6 +417,37 @@
                   </constraint>
                 </properties>
                 <defaultValue>no</defaultValue>
+              </leafNode>
+            </children>
+          </node>
+          <node name="script">
+            <properties>
+              <help>Execute script on client connect/disconnect</help>
+            </properties>
+            <children>
+              <leafNode name="connect">
+                <properties>
+                  <help>Script to execute upon client connecting</help>
+                  <valueHelp>
+                    <format>filename</format>
+                    <description>Client connect script, must be under /config/scripts</description>
+                  </valueHelp>
+                  <constraint>
+                    <validator name="file-path" argument="--file --parent-dir /config/scripts --strict"/>
+                  </constraint>
+                </properties>
+              </leafNode>
+              <leafNode name="disconnect">
+                <properties>
+                  <help>Script to execute upon client disconnecting</help>
+                  <valueHelp>
+                    <format>filename</format>
+                    <description>Client disconnect script, must be under /config/scripts</description>
+                  </valueHelp>
+                  <constraint>
+                    <validator name="file-path" argument="--file --parent-dir /config/scripts --strict"/>
+                  </constraint>
+                </properties>
               </leafNode>
             </children>
           </node>

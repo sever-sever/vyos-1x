@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -59,7 +59,7 @@ def topological_sort(source):
         temporary_marks.add(n)
 
         for m in v.get('group', []):
-            m = m.lstrip('!')
+            m = m.lstrip('!').replace('-', '_')
             if m not in source:
                 raise ConfigError(f'Undefined referenced group "{m}"')
             visit(m, source[m])

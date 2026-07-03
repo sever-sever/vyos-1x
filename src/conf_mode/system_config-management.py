@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,8 +19,10 @@ import sys
 
 from vyos import ConfigError
 from vyos.config import Config
+from vyos.configverify import verify_vrf
 from vyos.config_mgmt import ConfigMgmt
-from vyos.config_mgmt import commit_post_hook_dir, commit_hooks
+from vyos.config_mgmt import commit_post_hook_dir
+from vyos.config_mgmt import commit_hooks
 
 def get_config(config=None):
     if config:
@@ -33,16 +35,25 @@ def get_config(config=None):
         return None
 
     mgmt = ConfigMgmt(config=conf)
-
     return mgmt
 
-def verify(_mgmt):
+def verify(mgmt):
+    if mgmt is None:
+        return
+
+    d = mgmt.config_dict
+    confirm = d.get('commit_confirm', {})
+    if confirm.get('action', '') == 'reload' and 'commit_revisions' not in d:
+        raise ConfigError('commit-confirm reload requires non-zero commit-revisions')
+
+    if 'commit_archive' in d:
+        verify_vrf(d['commit_archive'])
+
     return
 
 def generate(mgmt):
     if mgmt is None:
         return
-
     mgmt.initialize_revision()
 
 def apply(mgmt):
@@ -50,8 +61,7 @@ def apply(mgmt):
         return
 
     locations = mgmt.locations
-    archive_target = os.path.join(commit_post_hook_dir,
-                               commit_hooks['commit_archive'])
+    archive_target = os.path.join(commit_post_hook_dir, commit_hooks['commit_archive'])
     if locations:
         try:
             os.symlink('/usr/bin/config-mgmt', archive_target)
@@ -68,8 +78,9 @@ def apply(mgmt):
             raise ConfigError from exc
 
     revisions = mgmt.max_revisions
-    revision_target = os.path.join(commit_post_hook_dir,
-                               commit_hooks['commit_revision'])
+    revision_target = os.path.join(
+        commit_post_hook_dir, commit_hooks['commit_revision']
+    )
     if revisions > 0:
         try:
             os.symlink('/usr/bin/config-mgmt', revision_target)
@@ -84,6 +95,7 @@ def apply(mgmt):
             pass
         except OSError as exc:
             raise ConfigError from exc
+
 
 if __name__ == '__main__':
     try:

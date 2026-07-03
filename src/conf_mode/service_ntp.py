@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,9 +17,11 @@
 import os
 
 from vyos.config import Config
+from vyos.config import config_dict_merge
 from vyos.configdict import is_node_changed
 from vyos.configverify import verify_vrf
 from vyos.configverify import verify_interface_exists
+from vyos.netlink import timestamp
 from vyos.utils.process import call
 from vyos.utils.permission import chmod_750
 from vyos.utils.network import get_interface_config
@@ -42,13 +44,21 @@ def get_config(config=None):
     if not conf.exists(base):
         return None
 
-    ntp = conf.get_config_dict(base, key_mangling=('-', '_'), get_first_key=True, with_defaults=True)
+    ntp = conf.get_config_dict(base, key_mangling=('-', '_'), get_first_key=True)
     ntp['config_file'] = config_file
     ntp['user'] = user_group
 
     tmp = is_node_changed(conf, base + ['vrf'])
     if tmp: ntp.update({'restart_required': {}})
 
+    # We have gathered the dict representation of the CLI, but there are default
+    # options which we need to update into the dictionary retrieved.
+    default_values = conf.get_config_defaults(**ntp.kwargs, recursive=True)
+    # Only defined PTP default port, if PTP feature is in use
+    if 'ptp' not in ntp:
+        del default_values['ptp']
+
+    ntp = config_dict_merge(default_values, ntp)
     return ntp
 
 def verify(ntp):
@@ -56,15 +66,12 @@ def verify(ntp):
     if not ntp:
         return None
 
-    if 'server' not in ntp:
-        raise ConfigError('NTP server not configured')
-
     verify_vrf(ntp)
 
     if 'interface' in ntp:
         # If ntpd should listen on a given interface, ensure it exists
         interface = ntp['interface']
-        verify_interface_exists(interface)
+        verify_interface_exists(ntp, interface)
 
         # If we run in a VRF, our interface must belong to this VRF, too
         if 'vrf' in ntp:
@@ -86,6 +93,44 @@ def verify(ntp):
             raise ConfigError(f'NTP Only admits one ipv4 value for listen-address parameter ')
         if ipv6_addresses > 1:
             raise ConfigError(f'NTP Only admits one ipv6 value for listen-address parameter ')
+
+    if 'server' in ntp:
+        for host, server in ntp['server'].items():
+            if 'ptp' in server:
+                if 'ptp' not in ntp:
+                    raise ConfigError('PTP must be enabled for the NTP service '\
+                                      f'before it can be used for server "{host}"')
+                else:
+                    break
+
+    if 'timestamp' in ntp:
+        for iface, iface_config in ntp['timestamp'].get('interface', {}).items():
+            rx_filter = iface_config.get('receive_filter')
+            if iface != 'all':
+                verify_interface_exists(ntp, iface)
+            if rx_filter and rx_filter != 'none':
+                if iface == 'all':
+                    any_supported = False
+                    for real_iface in os.listdir('/sys/class/net'):
+                        supported = timestamp.get_hw_timestamp_filters(real_iface)
+                        if rx_filter in supported or 'all' in supported:
+                            any_supported = True
+                            break
+                    if not any_supported:
+                        raise ConfigError(
+                            f'No interface supports hardware timestamp receive-filter "{rx_filter}"'
+                        )
+                else:
+                    supported = timestamp.get_hw_timestamp_filters(iface)
+                    if not supported:
+                        raise ConfigError(
+                            f'Interface "{iface}" does not support hardware timestamping'
+                        )
+                    if rx_filter not in supported and 'all' not in supported:
+                        raise ConfigError(
+                            f'Interface "{iface}" does not support hardware timestamp '
+                            f'receive-filter "{rx_filter}", supported: {", ".join(sorted(supported))}'
+                        )
 
     return None
 

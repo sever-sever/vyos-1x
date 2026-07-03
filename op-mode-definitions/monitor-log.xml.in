@@ -9,32 +9,19 @@
         <properties>
           <help>Monitor last lines of messages file</help>
         </properties>
-        <command>SYSTEMD_LOG_COLOR=false journalctl --no-hostname --follow --boot</command>
+        <command>SYSTEMD_COLORS=false journalctl --no-hostname --follow --boot</command>
         <children>
           <node name="color">
             <properties>
               <help>Output log in a colored fashion</help>
             </properties>
-            <command>SYSTEMD_LOG_COLOR=false grc journalctl --no-hostname --follow --boot</command>
-          </node>
-          <node name="ids">
-            <properties>
-              <help>Monitor Intrusion Detection System log</help>
-            </properties>
-            <children>
-              <leafNode name="ddos-protection">
-                <properties>
-                  <help>Monitor last lines of DDOS protection</help>
-                </properties>
-                <command>journalctl --no-hostname --follow --boot --unit fastnetmon.service</command>
-              </leafNode>
-            </children>
+            <command>SYSTEMD_COLORS=true journalctl --no-hostname --follow --boot</command>
           </node>
           <leafNode name="certbot">
             <properties>
               <help>Monitor last lines of certbot log</help>
             </properties>
-            <command>if sudo test -f /var/log/letsencrypt/letsencrypt.log; then sudo tail --follow=name /var/log/letsencrypt/letsencrypt.log; else echo "Cerbot log does not exist"; fi</command>
+            <command>bash -c 'if test -f /var/log/letsencrypt/letsencrypt.log; then tail --follow=name /var/log/letsencrypt/letsencrypt.log; else echo "Cerbot log does not exist"; fi'</command>
           </leafNode>
           <leafNode name="conntrack-sync">
             <properties>
@@ -57,7 +44,15 @@
                 <properties>
                   <help>Monitor last lines of DHCP server log</help>
                 </properties>
-                <command>journalctl --no-hostname --follow --boot --unit kea-dhcp4-server.service</command>
+                <command>journalctl --no-hostname --follow --boot --unit isc-kea-dhcp4-server.service</command>
+                <children>
+                  <tagNode name="vrf">
+                    <properties>
+                      <help>Monitor last lines of DHCP server log on specific vrf</help>
+                    </properties>
+                    <command>journalctl --no-hostname --follow --boot --unit "isc-kea-dhcp4-server@$6.service"</command>
+                  </tagNode>
+                </children>
               </node>
               <node name="client">
                 <properties>
@@ -87,7 +82,15 @@
                 <properties>
                   <help>Monitor last lines of DHCPv6 server log</help>
                 </properties>
-                <command>journalctl --no-hostname --follow --boot --unit kea-dhcp6-server.service</command>
+                <command>journalctl --no-hostname --follow --boot --unit isc-kea-dhcp6-server.service</command>
+                <children>
+                  <tagNode name="vrf">
+                    <properties>
+                      <help>Monitor last lines of DHCPv6 server log on specific vrf</help>
+                    </properties>
+                    <command>journalctl --no-hostname --follow --boot --unit "isc-kea-dhcp6-server@$6.service"</command>
+                  </tagNode>
+                </children>
               </node>
               <node name="client">
                 <properties>
@@ -108,11 +111,38 @@
               </node>
             </children>
           </node>
+          <tagNode name="facility">
+            <properties>
+              <help>Monitor last lines of messages file and filter by specified facility</help>
+              <completionHelp>
+                <list>kern user mail daemon auth syslog lpr news uucp cron authpriv ftp local0 local1 local2 local3 local4 local5 local6 local7</list>
+              </completionHelp>
+            </properties>
+            <command>SYSTEMD_COLORS=false journalctl --no-hostname --follow --boot --facility=$4</command>
+          </tagNode>
           <leafNode name="flow-accounting">
             <properties>
               <help>Monitor last lines of flow-accounting log</help>
             </properties>
-            <command>journalctl --no-hostname --boot --follow --unit uacctd.service</command>
+            <command>journalctl --no-hostname --boot --dmesg -g '^(ipt_NETFLOW|netflow): ' --follow</command>
+          </leafNode>
+          <leafNode name="frr">
+            <properties>
+              <help>Monitor last lines of FRRouting suite log</help>
+            </properties>
+            <command>journalctl --no-hostname --boot --follow --unit frr.service</command>
+          </leafNode>
+          <leafNode name="haproxy">
+            <properties>
+              <help>Monitor last lines of HAProxy log</help>
+            </properties>
+            <command>journalctl --no-hostname --boot --follow --unit haproxy.service</command>
+          </leafNode>
+          <leafNode name="igmp-proxy">
+            <properties>
+              <help>Monitor last lines of IGMP multicast proxy</help>
+            </properties>
+            <command>journalctl --no-hostname --boot --follow --unit igmpproxy.service</command>
           </leafNode>
           <leafNode name="ipoe-server">
             <properties>
@@ -131,12 +161,6 @@
               <help>Monitor last lines of Neighbor Discovery Protocol (NDP) Proxy</help>
             </properties>
             <command>journalctl --no-hostname --boot --follow --unit ndppd.service</command>
-          </leafNode>
-          <leafNode name="nhrp">
-            <properties>
-              <help>Monitor last lines of Next Hop Resolution Protocol log</help>
-            </properties>
-            <command>journalctl --no-hostname --boot --follow --unit opennhrp.service</command>
           </leafNode>
           <leafNode name="ntp">
             <properties>
@@ -184,6 +208,15 @@
             </properties>
             <command>journalctl --no-hostname --boot --follow --unit accel-ppp@pppoe.service</command>
           </leafNode>
+          <tagNode name="priority">
+            <properties>
+              <help>Monitor last lines of messages file and filter by minimum priority level (includes all higher severities)</help>
+              <completionHelp>
+                <list>emerg alert crit err warning notice info debug</list>
+              </completionHelp>
+            </properties>
+            <command>SYSTEMD_COLORS=false journalctl --no-hostname --follow --boot --priority=$4</command>
+          </tagNode>
           <node name="protocol">
             <properties>
               <help>Monitor routing protocol logs</help>
@@ -237,6 +270,12 @@
                 </properties>
                 <command>journalctl --follow --no-hostname --boot /usr/lib/frr/isisd</command>
               </leafNode>
+              <leafNode name="openfabric">
+                <properties>
+                  <help>Monitor log for OpenFabric</help>
+                </properties>
+                <command>journalctl --follow --no-hostname --boot /usr/lib/frr/fabricd</command>
+              </leafNode>
               <leafNode name="nhrp">
                 <properties>
                   <help>Monitor log for NHRP</help>
@@ -270,7 +309,7 @@
                     <path>interfaces macsec</path>
                   </completionHelp>
                 </properties>
-                <command>SRC=$(cli-shell-api returnValue interfaces macsec "$5" source-interface); journalctl --no-hostname --boot --follow --unit "wpa_supplicant-macsec@$SRC.service"</command>
+                <command>journalctl --no-hostname --boot --follow --unit "wpa_supplicant-macsec@`cli-shell-api returnEffectiveValue interfaces macsec $5 source-interface`.service"</command>
               </tagNode>
             </children>
           </node>
@@ -359,6 +398,18 @@
             </properties>
             <command>journalctl --no-hostname --boot --follow --unit keepalived.service</command>
           </leafNode>
+          <leafNode name="vyos-configd">
+            <properties>
+              <help>Monitor last lines of VyOS configuration daemon log</help>
+            </properties>
+            <command>journalctl --no-hostname --boot --follow --unit vyos-configd.service</command>
+          </leafNode>
+          <leafNode name="vyos-domain-resolver">
+            <properties>
+              <help>Monitor last lines of VyOS domain resolver daemon log</help>
+            </properties>
+            <command>journalctl --no-hostname --boot --follow --unit vyos-domain-resolver.service</command>
+          </leafNode>
           <node name="wireless">
             <properties>
               <help>Monitor last lines of Wireless interface log</help>
@@ -368,7 +419,7 @@
                 <properties>
                   <help>Monitor last lines of WPA supplicant</help>
                 </properties>
-                <command>if cli-shell-api existsActive interfaces wireless; then journalctl --no-hostname --boot --follow --unit "wpa_supplicant@*.service"; else echo "No wireless interface configured!"; fi</command>
+                <command>journalctl --no-hostname --boot --follow --unit "wpa_supplicant@*.service"</command>
                 <children>
                   <tagNode name="interface">
                     <properties>
@@ -377,7 +428,7 @@
                         <path>interfaces wireless</path>
                       </completionHelp>
                     </properties>
-                    <command>if [[ $(cli-shell-api returnActiveValue interfaces wireless $6 type) == "station" ]]; then journalctl --no-hostname --boot --follow --unit "wpa_supplicant@$6.service"; else echo "Wireless interface $6 not configured as station!"; fi</command>
+                    <command>journalctl --no-hostname --boot --follow --unit "wpa_supplicant@$6.service"</command>
                   </tagNode>
                 </children>
               </node>
@@ -385,7 +436,7 @@
                 <properties>
                   <help>Monitor last lines of host access point daemon</help>
                 </properties>
-                <command>if cli-shell-api existsActive interfaces wireless; then journalctl --no-hostname --boot --follow --unit "hostapd@*.service"; else echo "No wireless interface configured!"; fi</command>
+                <command>journalctl --no-hostname --boot --follow --unit "hostapd@*.service"</command>
                 <children>
                   <tagNode name="interface">
                     <properties>
@@ -394,7 +445,7 @@
                         <path>interfaces wireless</path>
                       </completionHelp>
                     </properties>
-                    <command>if [[ $(cli-shell-api returnActiveValue interfaces wireless $6 type) == "access-point" ]]; then journalctl --no-hostname --boot --follow --unit "hostapd@$6.service"; else echo "Wireless interface $6 not configured as access-point!"; fi</command>
+                    <command>journalctl --no-hostname --boot --follow --unit "hostapd@$6.service"</command>
                   </tagNode>
                 </children>
               </node>

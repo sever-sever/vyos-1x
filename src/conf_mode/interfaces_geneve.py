@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,8 +17,11 @@
 from sys import exit
 
 from vyos.config import Config
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configdict import get_interface_dict
 from vyos.configdict import is_node_changed
+from vyos.configdict import is_vrf_changed
 from vyos.configverify import verify_address
 from vyos.configverify import verify_mtu_ipv6
 from vyos.configverify import verify_bridge_delete
@@ -34,7 +37,7 @@ airbag.enable()
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least the
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least the
     interface name will be added or a deleted flag
     """
     if config:
@@ -47,9 +50,17 @@ def get_config(config=None):
     # GENEVE interfaces are picky and require recreation if certain parameters
     # change. But a GENEVE interface should - of course - not be re-created if
     # it's description or IP address is adjusted. Feels somehow logic doesn't it?
-    for cli_option in ['remote', 'vni', 'parameters']:
+    for cli_option in ['remote', 'vni', 'parameters', 'port']:
         if is_node_changed(conf, base + [ifname, cli_option]):
             geneve.update({'rebuild_required': {}})
+
+    # Protocols static arp dependency
+    if 'static_arp' in geneve:
+        set_dependents('static_arp', conf)
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
 
     return geneve
 
@@ -89,6 +100,9 @@ def apply(geneve):
         # Finally create the new interface
         g = GeneveIf(**geneve)
         g.update(geneve)
+
+    # run the dependents
+    call_dependents()
 
     return None
 

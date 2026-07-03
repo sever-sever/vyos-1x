@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -15,26 +15,40 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
+import psutil
+import re
 
 from sys import exit
 from time import sleep
 
+from vyos.base import Warning
 from vyos.config import Config
 from vyos.configverify import verify_source_interface
 from vyos.configverify import verify_interface_exists
 from vyos.system import grub_util
 from vyos.template import render
+from vyos.utils.boot import boot_configuration_complete
+from vyos.utils.convert import range_str_to_list
+from vyos.utils.convert import list_to_range_str
+from vyos.utils.cpu import get_cpus
+from vyos.utils.cpu import get_available_cpus
 from vyos.utils.dict import dict_search
 from vyos.utils.file import write_file
+from vyos.utils.file import read_file
 from vyos.utils.kernel import check_kmod
 from vyos.utils.process import cmd
 from vyos.utils.process import is_systemd_service_running
 from vyos.utils.network import is_addr_assigned
 from vyos.utils.network import is_intf_addr_assigned
+from vyos.utils.system import sysctl_write
 from vyos.configdep import set_dependents
 from vyos.configdep import call_dependents
 from vyos import ConfigError
 from vyos import airbag
+
+from vyos.vpp.config_resource_checks import memory as mem_check
+from vyos.vpp.config_resource_checks.resource_defaults import default_resource_map
+
 airbag.enable()
 
 curlrc_config = r'/etc/curlrc'
@@ -42,10 +56,132 @@ ssh_config = r'/etc/ssh/ssh_config.d/91-vyos-ssh-client-options.conf'
 systemd_action_file = '/lib/systemd/system/ctrl-alt-del.target'
 usb_autosuspend = r'/etc/udev/rules.d/40-usb-autosuspend.rules'
 kernel_dynamic_debug = r'/sys/kernel/debug/dynamic_debug/control'
-time_format_to_locale = {
-    '12-hour': 'en_US.UTF-8',
-    '24-hour': 'en_GB.UTF-8'
+time_format_to_locale = {'12-hour': 'en_US.UTF-8', '24-hour': 'en_GB.UTF-8'}
+tuned_profiles = {
+    'power-save': 'powersave',
+    'network-latency': 'network-latency',
+    'network-throughput': 'network-throughput',
+    'virtual-guest': 'virtual-guest',
+    'virtual-host': 'virtual-host',
 }
+
+MANAGED_PARAMS = {
+    'hugepages1g': {
+        'parse': r'hugepagesz=1[Gg]\s+hugepages=(?P<hugepages1g>\d+)',
+        'clean': r'hugepagesz=1[Gg](?:\s+hugepages=\d+)?',
+        'build': lambda v: f'hugepagesz=1G hugepages={v}',
+        'type': int,
+    },
+    'hugepages2m': {
+        'parse': r'hugepagesz=2[Mm]\s+hugepages=(?P<hugepages2m>\d+)',
+        'clean': r'hugepagesz=2[Mm](?:\s+hugepages=\d+)?',
+        'build': lambda v: f'hugepagesz=2M hugepages={v}',
+        'type': int,
+    },
+    'default_hugepagesz': {
+        'parse': r'default_hugepagesz=(?P<default_hugepagesz>\S+)',
+        'clean': r'default_hugepagesz=\S+',
+        'type': str,
+    },
+    'mitigations': {
+        'parse': r'mitigations=(?P<mitigations>\S+)',
+        'clean': r'mitigations=\S+',
+        'type': str,
+    },
+    'intel_idle.max_cstate': {
+        'parse': r'intel_idle\.max_cstate=(?P<intel_idle_max_cstate>\d+)',
+        'clean': r'intel_idle\.max_cstate=\d+',
+        'build': lambda v: f'intel_idle.max_cstate={v}',
+        'type': int,
+    },
+    'processor.max_cstate': {
+        'parse': r'processor\.max_cstate=(?P<processor_max_cstate>\d+)',
+        'clean': r'processor\.max_cstate=\d+',
+        'build': lambda v: f'processor.max_cstate={v}',
+        'type': int,
+    },
+    'initcall_blacklist': {
+        'parse': r'initcall_blacklist=(?P<initcall_blacklist>\S+)',
+        'clean': r'initcall_blacklist=\S+',
+        'type': str,
+    },
+    'amd_pstate': {
+        'parse': r'amd_pstate=(?P<amd_pstate>\S+)',
+        'clean': r'amd_pstate=\S+',
+        'type': str,
+    },
+    'quiet': {
+        'parse': r'(?P<quiet>\bquiet\b)',
+        'clean': r'\bquiet\b',
+        'type': bool,
+    },
+    'nosoftlockup': {
+        'parse': r'(?P<nosoftlockup>\bnosoftlockup\b)',
+        'clean': r'\bnosoftlockup\b',
+        'type': bool,
+    },
+    'panic': {
+        'parse': r'panic=(?P<panic>\d+)',
+        'clean': r'panic=\d+',
+        'type': int,
+    },
+    'mce': {
+        'parse': r'mce=(?P<mce>\S+)',
+        'clean': r'mce=\S+',
+        'type': str,
+    },
+    'hpet': {
+        'parse': r'hpet=(?P<hpet>\S+)',
+        'clean': r'hpet=\S+',
+        'type': str,
+    },
+    'nmi_watchdog': {
+        'parse': r'nmi_watchdog=(?P<nmi_watchdog>\d+)',
+        'clean': r'nmi_watchdog=\d+',
+        'type': int,
+    },
+    'isolcpus': {
+        'parse': r'isolcpus=(?P<isolcpus>\S+)',
+        'clean': r'isolcpus=\S+',
+        'type': str,
+    },
+    'nohz_full': {
+        'parse': r'nohz_full=(?P<nohz_full>\S+)',
+        'clean': r'nohz_full=\S+',
+        'type': str,
+    },
+    'rcu_nocbs': {
+        'parse': r'rcu_nocbs=(?P<rcu_nocbs>\S+)',
+        'clean': r'rcu_nocbs=\S+',
+        'type': str,
+    },
+    'numa_balancing': {
+        'parse': r'numa_balancing=(?P<numa_balancing>\S+)',
+        'clean': r'numa_balancing=\S+',
+        'type': str,
+    },
+}
+
+# Compiled regex pattern for parsing command line options
+_parse_cmdline_pattern = re.compile(
+    '|'.join(v['parse'] for v in MANAGED_PARAMS.values())
+)
+
+
+def _get_total_hugepages_and_memory(config):
+    unit_map = {'M': 1 << 20, 'G': 1 << 30}
+
+    total_pages = 0
+    total_bytes = 0
+
+    hp_sizes = config.get('hugepage_size', {})
+    for size_str, hp_config in hp_sizes.items():
+        pages = int(hp_config.get('hugepage_count', 0))
+        total_pages += pages
+        total_bytes += pages * int(size_str[:-1]) * unit_map[size_str[-1]]
+
+    return total_pages, total_bytes
+
 
 def get_config(config=None):
     if config:
@@ -53,63 +189,313 @@ def get_config(config=None):
     else:
         conf = Config()
     base = ['system', 'option']
-    options = conf.get_config_dict(base, key_mangling=('-', '_'),
-                                   get_first_key=True,
-                                   with_recursive_defaults=True)
+    options = conf.get_config_dict(
+        base, key_mangling=('-', '_'), get_first_key=True, with_recursive_defaults=True
+    )
 
     if 'performance' in options:
         # Update IPv4/IPv6 and sysctl options after tuned applied it's settings
         set_dependents('ip_ipv6', conf)
+        set_dependents('firewall', conf)
         set_dependents('sysctl', conf)
 
     return options
+
 
 def verify(options):
     if 'http_client' in options:
         config = options['http_client']
         if 'source_interface' in config:
-            verify_interface_exists(config['source_interface'])
+            verify_interface_exists(options, config['source_interface'])
 
         if {'source_address', 'source_interface'} <= set(config):
-            raise ConfigError('Can not define both HTTP source-interface and source-address')
+            raise ConfigError(
+                'Cannot define both HTTP source-interface and source-address'
+            )
 
         if 'source_address' in config:
             if not is_addr_assigned(config['source_address']):
-                raise ConfigError('No interface with give address specified!')
+                raise ConfigError('No interface with given address specified!')
 
     if 'ssh_client' in options:
         config = options['ssh_client']
         if 'source_address' in config:
             address = config['source_address']
             if not is_addr_assigned(config['source_address']):
-                raise ConfigError('No interface with address "{address}" configured!')
+                raise ConfigError(f'No interface with address "{address}" configured!')
 
         if 'source_interface' in config:
+            # verify_source_interface requires key 'ifname'
+            config['ifname'] = config['source_interface']
             verify_source_interface(config)
             if 'source_address' in config:
                 address = config['source_address']
                 interface = config['source_interface']
                 if not is_intf_addr_assigned(interface, address):
-                    raise ConfigError(f'Address "{address}" not assigned on interface "{interface}"!')
+                    raise ConfigError(
+                        f'Address "{address}" not assigned on interface "{interface}"!'
+                    )
+
+    if 'kernel' in options:
+        _cpu_info = get_cpus()[0]
+        cpu_vendor = _cpu_info.get('vendor_id', 'unknown')
+        if 'amd_pstate_driver' in options['kernel'] and cpu_vendor != 'AuthenticAMD':
+            raise ConfigError(
+                f'AMD pstate driver cannot be used with "{cpu_vendor}" CPU!'
+            )
+
+        isolate_cpus = dict_search('kernel.cpu.isolate_cpus', options)
+        if isolate_cpus:
+            available_cores = sorted({int(cpu['cpu']) for cpu in get_available_cpus()})
+            cpus_list = range_str_to_list(isolate_cpus)
+            reserved_cpus = default_resource_map.get('reserved_cpu_cores')
+
+            cpus_available = len(available_cores) - reserved_cpus
+            if len(cpus_list) > cpus_available:
+                raise ConfigError(
+                    f'Cannot isolate {len(cpus_list)} CPUs ({isolate_cpus}): '
+                    f'only {cpus_available} of {len(available_cores)} physical cores '
+                    f'are available ({reserved_cpus} reserved for the system)'
+                )
+
+            not_available = [cpu for cpu in cpus_list if cpu not in available_cores]
+            if not_available:
+                not_available_str = list_to_range_str(not_available)
+                available_str = list_to_range_str(available_cores)
+                raise ConfigError(
+                    f'CPU(s) {not_available_str} do not exist on this system. '
+                    f'Available CPUs: {available_str}'
+                )
+
+        _, hp_memory_bytes = _get_total_hugepages_and_memory(
+            options['kernel'].get('memory', {})
+        )
+        if hp_memory_bytes:
+            memory = psutil.virtual_memory()
+            memory_total_bytes = memory.total
+
+            # Exclude hugepage usage from system "used" memory
+            hp_memory_used = sum(
+                p['memory'] for p in mem_check.get_hugepages_info().values()
+            )
+            memory_used_bytes = memory.used - hp_memory_used
+
+            # TODO: need to calculate how much memory is consumed for other services, tmpfs etc.
+            # for now we should leave at least 4 GB for system usage and other processes
+            min_system_reserved_gd = 4
+            memory_margin_gb = 1
+            reserved_bytes = max(
+                min_system_reserved_gd * 1024**3,
+                memory_used_bytes + memory_margin_gb * 1024**3,
+            )
+
+            available_for_hp_bytes = memory_total_bytes - reserved_bytes
+            if available_for_hp_bytes < hp_memory_bytes:
+                # For the error message, convert to GB and round to 1 decimal
+                hp_memory_gb = round(hp_memory_bytes / 1024**3, 1)
+                available_for_hp_gb = max(0, round(available_for_hp_bytes / 1024**3, 1))
+                reserved_gb = round(reserved_bytes / 1024**3, 1)
+                raise ConfigError(
+                    f'Configured hugepages require {hp_memory_gb} GB of memory, but only '
+                    f'{available_for_hp_gb:.1f} GB is available '
+                    f'({reserved_gb} GB is reserved for system usage and services)'
+                )
 
     return None
+
 
 def generate(options):
     render(curlrc_config, 'system/curlrc.j2', options)
     render(ssh_config, 'system/ssh_config.j2', options)
     render(usb_autosuspend, 'system/40_usb_autosuspend.j2', options)
 
+    # XXX: This code path and if statements must be kept in sync with the Kernel
+    # option handling in image_installer.py:get_cli_kernel_options(). This
+    # occurrence is used for having the appropriate options passed to GRUB
+    # when re-configuring options on the CLI.
     cmdline_options = []
+    kernel_opts = options.get('kernel', {})
+    k_cpu_opts = kernel_opts.get('cpu', {})
+    k_memory_opts = kernel_opts.get('memory', {})
     if 'kernel' in options:
         if 'disable_mitigations' in options['kernel']:
             cmdline_options.append('mitigations=off')
         if 'disable_power_saving' in options['kernel']:
             cmdline_options.append('intel_idle.max_cstate=0 processor.max_cstate=1')
-    grub_util.update_kernel_cmdline_options(' '.join(cmdline_options))
+        if 'amd_pstate_driver' in options['kernel']:
+            mode = options['kernel']['amd_pstate_driver']
+            cmdline_options.append(
+                f'initcall_blacklist=acpi_cpufreq_init amd_pstate={mode}'
+            )
+        if 'quiet' in options['kernel']:
+            cmdline_options.append('quiet')
+
+    # Early reboot on kernel panic via kernel cmdline
+    # Keep this in sync with image_installer.py:get_cli_kernel_options()
+    if 'reboot_on_panic' in options:
+        cmdline_options.append('panic=60')
+
+    if 'disable_hpet' in kernel_opts:
+        cmdline_options.append('hpet=disable')
+
+    if 'disable_mce' in kernel_opts:
+        cmdline_options.append('mce=off')
+
+    if 'disable_softlockup' in kernel_opts:
+        cmdline_options.append('nosoftlockup')
+
+    # CPU options
+    isol_cpus = k_cpu_opts.get('isolate_cpus')
+    if isol_cpus:
+        cmdline_options.append(f'isolcpus={isol_cpus}')
+
+    nohz_full = k_cpu_opts.get('nohz_full')
+    if nohz_full:
+        cmdline_options.append(f'nohz_full={nohz_full}')
+
+    rcu_nocbs = k_cpu_opts.get('rcu_no_cbs')
+    if rcu_nocbs:
+        cmdline_options.append(f'rcu_nocbs={rcu_nocbs}')
+
+    if 'disable_nmi_watchdog' in k_cpu_opts:
+        cmdline_options.append('nmi_watchdog=0')
+
+    # Memory options
+    if 'disable_numa_balancing' in k_memory_opts:
+        cmdline_options.append('numa_balancing=disable')
+
+    default_hp_size = k_memory_opts.get('default_hugepage_size')
+    if default_hp_size:
+        cmdline_options.append(f'default_hugepagesz={default_hp_size}')
+
+    hp_sizes = k_memory_opts.get('hugepage_size')
+    if hp_sizes:
+        for size, settings in hp_sizes.items():
+            cmdline_options.append(f'hugepagesz={size}')
+            count = settings.get('hugepage_count')
+            if count:
+                cmdline_options.append(f'hugepages={count}')
+
+    cmdline_options_str = ' '.join(cmdline_options)
+
+    grub_util.update_kernel_cmdline_options(cmdline_options_str)
+
+    options['cmdline_options'] = cmdline_options_str
 
     return None
 
+
+def parse_cmdline(cmdline):
+    """
+    Parse command line parameters into a dictionary of managed parameters.
+
+    Args:
+        cmdline: The command line string (e.g., from /proc/cmdline)
+
+    Returns:
+        Dictionary with parsed parameters
+    """
+    # Produce a complete template of all managed parameters with
+    # consistent default values before scanning the actual kernel cmdline.
+    result = {
+        k: (False if v['type'] is bool else None) for k, v in MANAGED_PARAMS.items()
+    }
+
+    # Mapping from regex group names to real parameter keys
+    group_to_key = {
+        'intel_idle_max_cstate': 'intel_idle.max_cstate',
+        'processor_max_cstate': 'processor.max_cstate',
+    }
+
+    # Find all matches and populate result
+    for match in _parse_cmdline_pattern.finditer(cmdline):
+        for group_name, value in match.groupdict().items():
+            key = group_to_key.get(group_name, group_name)
+
+            # skip empty values and unknown parameters
+            if value is None or key not in MANAGED_PARAMS:
+                continue
+
+            entry = MANAGED_PARAMS[key]
+
+            if entry['type'] is bool:
+                result[key] = True
+            elif entry['type'] is int:
+                result[key] = int(value)
+            else:
+                result[key] = value
+
+    return result
+
+
+def generate_cmdline_for_kexec(options):
+    """
+    Build an updated kernel cmdline string based on desired options and the
+    currently running /proc/cmdline.
+
+    Returns:
+        tuple: (kexec_required, new_cmdline)
+            - kexec_required (bool): True if kernel options were added, removed or modified.
+            - new_cmdline (str): The updated kernel command line string.
+    """
+    # Read current cmdline and parse it
+    current_cmdline = read_file('/proc/cmdline').strip()
+    current_parsed = parse_cmdline(current_cmdline)
+
+    # Parse desired options from options['cmdline_options']
+    desired_options = options.get('cmdline_options', '')
+    desired_parsed = parse_cmdline(desired_options)
+
+    # Compare dicts to define if kexec is needed
+    kexec_required = current_parsed != desired_parsed
+    if not kexec_required:
+        return kexec_required, current_cmdline
+
+    # Clean managed params and surrounding whitespaces
+    clean_patterns = [entry['clean'] for entry in MANAGED_PARAMS.values()]
+    combined_pattern = (
+        r'(?:(?<=^)|(?<=\s))(?:' + '|'.join(clean_patterns) + r')(?=\s|$)'
+    )
+    cleaned = re.sub(combined_pattern, ' ', current_cmdline)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+    # Build new cmdline
+    parts = []
+    for key, entry in MANAGED_PARAMS.items():
+        val = desired_parsed[key]
+        if val is None or val is False:
+            continue
+
+        if 'build' in entry:
+            parts.append(entry['build'](val))
+        elif entry['type'] is bool:
+            parts.append(key)
+        else:
+            parts.append(f'{key}={val}')
+
+    rebuilt = ' '.join(parts)
+
+    new_cmdline = (cleaned + ' ' + rebuilt).strip() if cleaned else rebuilt
+
+    return kexec_required, new_cmdline
+
+
 def apply(options):
+    kexec_required, cmdline_new = generate_cmdline_for_kexec(options)
+    if kexec_required:
+        if not boot_configuration_complete() and os.getenv('VYOS_CONFIGD'):
+            cmd(
+                'kexec -l /boot/vmlinuz --initrd=/boot/initrd.img '
+                f'--command-line="{cmdline_new}" --kexec-file-syscall'
+            )
+            os.sync()
+            cmd('systemctl kexec')
+        elif boot_configuration_complete():
+            Warning(
+                'Kernel configuration options have changed. '
+                'To apply these changes, you must save the configuration and reboot the system!'
+            )
+
     # System bootup beep
     beep_service = 'vyos-beep.service'
     if 'startup_beep' in options:
@@ -147,9 +533,12 @@ def apply(options):
     if 'performance' in options:
         cmd('systemctl restart tuned.service')
         # wait until daemon has started before sending configuration
-        while (not is_systemd_service_running('tuned.service')):
+        while not is_systemd_service_running('tuned.service'):
             sleep(0.250)
-        cmd('tuned-adm profile network-{performance}'.format(**options))
+        performance = ' '.join(
+            list(tuned_profiles[profile] for profile in options['performance'])
+        )
+        cmd(f'tuned-adm profile {performance}')
     else:
         cmd('systemctl stop tuned.service')
 
@@ -162,9 +551,9 @@ def apply(options):
 
     # Enable/diable root-partition-auto-resize SystemD service
     if 'root_partition_auto_resize' in options:
-      cmd('systemctl enable root-partition-auto-resize.service')
+        cmd('systemctl enable root-partition-auto-resize.service')
     else:
-      cmd('systemctl disable root-partition-auto-resize.service')
+        cmd('systemctl disable root-partition-auto-resize.service')
 
     # Time format 12|24-hour
     if 'time_format' in options:
@@ -183,6 +572,35 @@ def apply(options):
             write_file(kernel_dynamic_debug, f'module {module} +p')
         else:
             write_file(kernel_dynamic_debug, f'module {module} -p')
+
+    if 'resource_limits' in options:
+        total_pages, total_bytes = _get_total_hugepages_and_memory(
+            options.get('kernel', {}).get('memory', {})
+        )
+
+        # Minimum recommended system values
+        max_map_count_min = 65530  # ensures large workload compatibility
+        shmmax_min = 8589934592  # 8 GiB safe default for large allocations
+
+        max_map_count_conf = options['resource_limits'].get('max_map_count', 'auto')
+        shmmax_conf = options['resource_limits'].get('shmmax', 'auto')
+
+        parameters = {
+            'vm.max_map_count': (
+                max(total_pages * 2, max_map_count_min)
+                if max_map_count_conf == 'auto'
+                else int(max_map_count_conf)
+            ),
+            'kernel.shmmax': (
+                max(total_bytes, shmmax_min)
+                if shmmax_conf == 'auto'
+                else int(shmmax_conf)
+            ),
+        }
+
+        for parameter, value in parameters.items():
+            sysctl_write(parameter.split('.'), value)
+
 
 if __name__ == '__main__':
     try:

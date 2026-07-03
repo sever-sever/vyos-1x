@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -47,7 +47,7 @@ TMPL_INDIVIDUAL_BOND = """Interface        RX: bytes  packets     TX: bytes  pac
 """
 
 if args.slaves and args.interface:
-    exit('Can not use both --slaves and --interfaces option at the same time')
+    exit('Cannot use both --slaves and --interface option at the same time')
     parser.print_help()
 
 elif args.slaves:
@@ -60,7 +60,7 @@ elif args.slaves:
         cfg_dict['mode'] = tmp.get_mode()
         cfg_dict['admin_state'] = tmp.get_admin_state()
         cfg_dict['oper_state'] = tmp.operational.get_state()
-        cfg_dict['members'] = tmp.get_slaves()
+        cfg_dict['members'] = tmp.get_members()
         data.append(cfg_dict)
 
 elif args.interface:
@@ -74,7 +74,7 @@ elif args.interface:
 
     # each bond member interface has its own statistics
     data['members'] = []
-    for member in BondIf(args.interface).get_slaves():
+    for member in BondIf(args.interface).get_members():
         tmp = {}
         tmp['ifname'] = member
         tmp['rx_bytes'] = read_file(f'/sys/class/net/{member}/statistics/rx_bytes')

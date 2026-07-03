@@ -7,6 +7,18 @@
     #include <include/dhcp/captive-portal.xml.i>
     #include <include/dhcp/domain-search.xml.i>
     #include <include/name-server-ipv6.xml.i>
+    <leafNode name="capwap-controller">
+      <properties>
+        <help>IP address of CAPWAP access controller (Option 52)</help>
+        <valueHelp>
+          <format>ipv6</format>
+          <description>CAPWAP AC controller</description>
+        </valueHelp>
+        <constraint>
+          <validator name="ipv6-address"/>
+        </constraint>
+      </properties>
+    </leafNode>
     <leafNode name="nis-domain">
       <properties>
         <help>NIS domain name for client to use</help>
@@ -76,6 +88,29 @@
           <validator name="ipv6-address"/>
         </constraint>
         <multi/>
+      </properties>
+    </leafNode>
+    <leafNode name="info-refresh-time">
+      <properties>
+      <help>Time (in seconds) that stateless clients should wait between refreshing the information they were given</help>
+      <valueHelp>
+        <format>u32:1-4294967295</format>
+        <description>DHCPv6 information refresh time</description>
+      </valueHelp>
+      <constraint>
+        <validator name="numeric" argument="--range 1-4294967295"/>
+      </constraint>
+      </properties>
+    </leafNode>
+    <leafNode name="time-zone">
+      <properties>
+        <help>Time zone to send to clients. Uses RFC4833 options 41 and 42</help>
+        <completionHelp>
+          <script>timedatectl list-timezones</script>
+        </completionHelp>
+        <constraint>
+          <validator name="timezone" argument="--validate"/>
+        </constraint>
       </properties>
     </leafNode>
     <node name="vendor-option">

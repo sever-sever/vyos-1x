@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,8 +19,11 @@ import os
 from sys import exit
 
 from vyos.config import Config
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configdict import get_interface_dict
 from vyos.configdict import is_node_changed
+from vyos.configdict import is_vrf_changed
 from vyos.configdict import is_source_interface
 from vyos.configverify import verify_vrf
 from vyos.configverify import verify_address
@@ -53,7 +56,7 @@ GCM_256_KEY_ERROR = 'gcm-aes-256 requires a 256bit long key!'
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least the
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least the
     interface name will be added or a deleted flag
     """
     if config:
@@ -71,12 +74,20 @@ def get_config(config=None):
     if is_node_changed(conf, base + [ifname, 'security']):
         macsec.update({'shutdown_required': {}})
 
-    if is_node_changed(conf, base + [ifname, 'source_interface']):
+    if is_node_changed(conf, base + [ifname, 'source-interface']):
         macsec.update({'shutdown_required': {}})
 
     if 'source_interface' in macsec:
         tmp = is_source_interface(conf, macsec['source_interface'], ['macsec', 'pseudo-ethernet'])
         if tmp and tmp != ifname: macsec.update({'is_source_interface' : tmp})
+
+    # Protocols static arp dependency
+    if 'static_arp' in macsec:
+        set_dependents('static_arp', conf)
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
 
     return macsec
 
@@ -148,11 +159,11 @@ def verify(macsec):
 
     if 'source_interface' in macsec:
         # MACsec adds a 40 byte overhead (32 byte MACsec + 8 bytes VLAN 802.1ad
-        # and 802.1q) - we need to check the underlaying MTU if our configured
+        # and 802.1q) - we need to check the underlying MTU if our configured
         # MTU is at least 40 bytes less then the MTU of our physical interface.
         lower_mtu = Interface(macsec['source_interface']).get_mtu()
         if lower_mtu < (int(macsec['mtu']) + 40):
-            raise ConfigError('MACsec overhead does not fit into underlaying device MTU,\n' \
+            raise ConfigError('MACsec overhead does not fit into underlying device MTU,\n' \
                               f'{lower_mtu} bytes is too small!')
 
     return None
@@ -181,6 +192,9 @@ def apply(macsec):
             if os.path.isfile(wpa_suppl_conf.format(**macsec)):
                 os.unlink(wpa_suppl_conf.format(**macsec))
 
+            # run the dependents
+            call_dependents()
+
             return None
 
     # It is safe to "re-create" the interface always, there is a sanity
@@ -192,6 +206,9 @@ def apply(macsec):
     if dict_search('security.mka.cak', macsec):
         if not is_systemd_service_running(systemd_service) or 'shutdown_required' in macsec:
             call(f'systemctl reload-or-restart {systemd_service}')
+
+    # run the dependents
+    call_dependents()
 
     return None
 

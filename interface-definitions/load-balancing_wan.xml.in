@@ -7,7 +7,7 @@
     <children>
       <node name="wan" owner="${vyos_conf_scripts_dir}/load-balancing_wan.py">
         <properties>
-          <help>Configure Wide Area Network (WAN) load-balancing</help>
+          <help>Wide Area Network (WAN) load-balancing</help>
           <priority>900</priority>
         </properties>
         <children>
@@ -26,6 +26,12 @@
           <leafNode name="flush-connections">
             <properties>
               <help>Flush connection tracking tables on connection state change</help>
+              <valueless/>
+            </properties>
+          </leafNode>
+          <leafNode name="only-default-route">
+            <properties>
+              <help>Prefer specific routes in the main routing table over WAN load balancing</help>
               <valueless/>
             </properties>
           </leafNode>
@@ -203,6 +209,7 @@
                   <help>Destination</help>
                 </properties>
                 <children>
+                  #include <include/firewall/source-destination-group-ipv4.xml.i>
                   #include <include/ipv4-address-prefix-range.xml.i>
                   #include <include/port-port-range.xml.i>
                 </children>
@@ -373,6 +380,7 @@
                   <help>Source information</help>
                 </properties>
                 <children>
+                  #include <include/firewall/source-destination-group-ipv4.xml.i>
                   #include <include/ipv4-address-prefix-range.xml.i>
                   #include <include/port-port-range.xml.i>
                 </children>

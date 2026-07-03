@@ -1,4 +1,4 @@
-# Copyright 2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -50,7 +50,7 @@ def find_persistence() -> str:
     """Find a mountpoint for persistence storage
 
     Returns:
-        str: Path where 'persistance' pertition is mounted, Empty if not found
+        str: Path where 'persistence' pertition is mounted, Empty if not found
     """
     mounted_partitions = disk_partitions()
     for partition in mounted_partitions:
@@ -77,7 +77,7 @@ def parttable_create(drive_path: str, root_size: int) -> None:
         -n3:0:+{root_size_text}K -t3:8300 {drive_path}'
 
     run(command)
-    # update partitons in kernel
+    # update partitions in kernel
     sync()
     run(f'partx -u {drive_path}')
 

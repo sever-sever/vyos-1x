@@ -86,12 +86,7 @@
     </constraint>
   </properties>
 </leafNode>
-<leafNode name="log-adjacency-changes">
-  <properties>
-    <help>Log adjacency state changes</help>
-    <valueless/>
-  </properties>
-</leafNode>
+#include <include/log-adjacency-changes.xml.i>
 <leafNode name="lsp-gen-interval">
   <properties>
     <help>Minimum interval between regenerating same LSP</help>
@@ -103,6 +98,7 @@
       <validator name="numeric" argument="--range 1-120"/>
     </constraint>
   </properties>
+  <defaultValue>30</defaultValue>
 </leafNode>
 <leafNode name="lsp-mtu">
   <properties>
@@ -121,13 +117,14 @@
   <properties>
     <help>LSP refresh interval</help>
     <valueHelp>
-      <format>u32:1-65235</format>
+      <format>u32:2-65235</format>
       <description>LSP refresh interval in seconds</description>
     </valueHelp>
     <constraint>
-      <validator name="numeric" argument="--range 1-65235"/>
+      <validator name="numeric" argument="--range 2-65235"/>
     </constraint>
   </properties>
+  <defaultValue>900</defaultValue>
 </leafNode>
 <leafNode name="max-lsp-lifetime">
   <properties>
@@ -140,6 +137,7 @@
       <validator name="numeric" argument="--range 1-65535"/>
     </constraint>
   </properties>
+  <defaultValue>1200</defaultValue>
 </leafNode>
 <leafNode name="metric-style">
   <properties>
@@ -208,18 +206,7 @@
     #include <include/isis/lfa-protocol.xml.i>
   </children>
 </node>
-<leafNode name="net">
-  <properties>
-    <help>A Network Entity Title for this process (ISO only)</help>
-    <valueHelp>
-      <format>XX.XXXX. ... .XXX.XX</format>
-      <description>Network entity title (NET)</description>
-    </valueHelp>
-    <constraint>
-      <regex>[a-fA-F0-9]{2}(\.[a-fA-F0-9]{4}){3,9}\.[a-fA-F0-9]{2}</regex>
-    </constraint>
-  </properties>
-</leafNode>
+#include <include/net.xml.i>
 <leafNode name="purge-originator">
   <properties>
     <help>Use the RFC 6232 purge-originator</help>
@@ -282,6 +269,12 @@
         </constraint>
       </properties>
     </leafNode>
+    <leafNode name="export">
+      <properties>
+        <help>Export Traffic Engineering Database, see options under protocols traffic-engineering</help>
+        <valueless/>
+      </properties>
+    </leafNode>
   </children>
 </node>
 <node name="segment-routing">
@@ -291,7 +284,7 @@
   <children>
     <node name="global-block">
       <properties>
-        <help>Segment Routing Global Block label range</help>
+        <help>Segment-Routing Global Block label range</help>
       </properties>
       <children>
         #include <include/segment-routing-label-value.xml.i>
@@ -299,7 +292,7 @@
     </node>
     <node name="local-block">
       <properties>
-        <help>Segment Routing Local Block label range</help>
+        <help>Segment-Routing Local Block label range</help>
       </properties>
       <children>
         #include <include/segment-routing-label-value.xml.i>
@@ -398,6 +391,94 @@
         </node>
       </children>
     </tagNode>
+    <node name="srv6">
+      <properties>
+        <help>Segment-Routing over IPv6 (SRv6) configuration</help>
+      </properties>
+      <children>
+        <leafNode name="locator">
+          <properties>
+            <help>Specify SRv6 locator</help>
+            <valueHelp>
+              <format>txt</format>
+              <description>SRv6 locator name</description>
+            </valueHelp>
+            <completionHelp>
+              <script>${vyos_completion_dir}/list_srv6_locators.sh</script>
+            </completionHelp>
+            <constraint>
+              #include <include/constraint/alpha-numeric-hyphen-underscore.xml.i>
+            </constraint>
+          </properties>
+        </leafNode>
+        <node name="node-msd">
+          <properties>
+            <help>SRv6 Maximum Segment ID (SID) Depth (MSD)</help>
+          </properties>
+          <children>
+            <leafNode name="max-end-d">
+              <properties>
+                <help>Maximum Segment Identifier for End-of-Data</help>
+                <valueHelp>
+                  <format>u32:0-255</format>
+                  <description>Maximum End D MSD</description>
+                </valueHelp>
+                <constraint>
+                  <validator name="numeric" argument="--range 0-255"/>
+                </constraint>
+              </properties>
+            </leafNode>
+            <leafNode name="max-end-pop">
+              <properties>
+                <help>Maximum number of SIDs in Segment-Routing Header (SRH) for segment pop</help>
+                <valueHelp>
+                  <format>u32:0-255</format>
+                  <description>Maximum End Pop MSD</description>
+                </valueHelp>
+                <constraint>
+                  <validator name="numeric" argument="--range 0-255"/>
+                </constraint>
+              </properties>
+            </leafNode>
+            <leafNode name="max-h-encaps">
+              <properties>
+                <help>Maximum Headend Encapsulation in MSD</help>
+                <valueHelp>
+                  <format>u32:0-255</format>
+                  <description>Maximum Headend encaps in MSD</description>
+                </valueHelp>
+                <constraint>
+                  <validator name="numeric" argument="--range 0-255"/>
+                </constraint>
+              </properties>
+            </leafNode>
+            <leafNode name="max-segs-left">
+              <properties>
+                <help>Maximum Segments left in MSD</help>
+                <valueHelp>
+                  <format>u32:0-255</format>
+                  <description>Maximum Segments Left</description>
+                </valueHelp>
+                  <constraint>
+                  <validator name="numeric" argument="--range 0-255"/>
+                </constraint>
+              </properties>
+            </leafNode>
+          </children>
+        </node>
+        <leafNode name="interface">
+          <properties>
+            <help>Interface for Segment-Routing over IPv6 (SRv6)</help>
+            <completionHelp>
+              <script>${vyos_completion_dir}/list_interfaces</script>
+            </completionHelp>
+            <constraint>
+              #include <include/constraint/interface-name.xml.i>
+            </constraint>
+          </properties>
+        </leafNode>
+      </children>
+    </node>
   </children>
 </node>
 <node name="redistribute">
@@ -429,6 +510,14 @@
         <node name="kernel">
           <properties>
             <help>Redistribute kernel routes into IS-IS</help>
+          </properties>
+          <children>
+            #include <include/isis/redistribute-level-1-2.xml.i>
+          </children>
+        </node>
+        <node name="nhrp">
+          <properties>
+            <help>Redistribute NHRP routes into IS-IS</help>
           </properties>
           <children>
             #include <include/isis/redistribute-level-1-2.xml.i>
@@ -656,6 +745,96 @@
         </constraint>
       </properties>
     </leafNode>
+    <node name="fast-reroute">
+      <properties>
+        <help>IS-IS fast reroute</help>
+      </properties>
+      <children>
+        <node name="lfa">
+          <properties>
+            <help>Enable LFA computation</help>
+          </properties>
+          <children>
+            <node name="level-1">
+              <properties>
+                <help> Enable LFA computation for Level 1 only</help>
+              </properties>
+              <children>
+                <leafNode name="enable">
+                  <properties>
+                    <help>Enable LFA</help>
+                    <valueless/>
+                  </properties>
+                </leafNode>
+                #include <include/isis/exclude-interface.xml.i>
+              </children>
+            </node>
+            <node name="level-2">
+              <properties>
+                <help>Enable LFA computation for Level 2 only</help>
+              </properties>
+              <children>
+                <leafNode name="enable">
+                  <properties>
+                    <help>Enable LFA</help>
+                    <valueless/>
+                  </properties>
+                </leafNode>
+                #include <include/isis/exclude-interface.xml.i>
+              </children>
+            </node>
+          </children>
+        </node>
+        <node name="remote-lfa">
+          <properties>
+            <help>Enable remote LFA computation</help>
+          </properties>
+          <children>
+            <node name="level-1">
+              <properties>
+                <help> Enable remote LFA computation for Level 1 only</help>
+              </properties>
+              <children>
+                #include <include/isis/frr-maxmetric.xml.i>
+                #include <include/isis/remote_lfa_tunnel.xml.i>
+              </children>
+            </node>
+            <node name="level-2">
+              <properties>
+                <help>Enable remote LFA computation for Level 2 only</help>
+              </properties>
+              <children>
+                #include <include/isis/frr-maxmetric.xml.i>
+                #include <include/isis/remote_lfa_tunnel.xml.i>
+              </children>
+            </node>
+          </children>
+        </node>
+        <node name="ti-lfa">
+          <properties>
+            <help> Enable TI-LFA computation</help>
+          </properties>
+          <children>
+            <node name="level-1">
+              <properties>
+                <help>Enable TI-LFA computation for Level 1 only</help>
+              </properties>
+              <children>
+                #include <include/isis/node-protection.xml.i>
+              </children>
+            </node>
+            <node name="level-2">
+              <properties>
+                <help>Enable TI-LFA computation for Level 2 only</help>
+              </properties>
+              <children>
+                #include <include/isis/node-protection.xml.i>
+              </children>
+            </node>
+          </children>
+        </node>
+      </children>
+    </node>
     <leafNode name="hello-padding">
       <properties>
         <help>Add padding to IS-IS hello packets</help>

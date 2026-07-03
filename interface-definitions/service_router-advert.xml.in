@@ -16,6 +16,7 @@
               </completionHelp>
             </properties>
             <children>
+              #include <include/dhcp/captive-portal.xml.i>
               <leafNode name="hop-limit">
                 <properties>
                   <help>Set Hop Count field of the IP header for outgoing packets</help>
@@ -48,7 +49,7 @@
                   <constraint>
                     <validator name="numeric" argument="--range 0-0 --range 4-9000"/>
                   </constraint>
-                  <constraintErrorMessage>Default router livetime bust be 0 or between 4 and 9000</constraintErrorMessage>
+                  <constraintErrorMessage>Default router lifetime must be 0 or between 4 and 9000</constraintErrorMessage>
                 </properties>
               </leafNode>
               <leafNode name="default-preference">
@@ -84,7 +85,7 @@
               </leafNode>
               <leafNode name="link-mtu">
                 <properties>
-                  <help>Link MTU value placed in RAs, exluded in RAs if unset</help>
+                  <help>Link MTU value placed in RAs, excluded in RAs if unset</help>
                   <valueHelp>
                     <format>u32:1280-9000</format>
                     <description>Link MTU value in RAs</description>
@@ -255,6 +256,19 @@
                   </leafNode>
                 </children>
               </tagNode>
+              <leafNode name="auto-ignore">
+                <properties>
+                  <help>IPv6 prefix to be excluded in Router Advertisements (RAs) - use in conjunction with the ::/64 wildcard prefix</help>
+                  <valueHelp>
+                    <format>ipv6net</format>
+                    <description>IPv6 prefix to be excluded</description>
+                  </valueHelp>
+                  <constraint>
+                    <validator name="ipv6-prefix"/>
+                  </constraint>
+                  <multi/>
+                </properties>
+              </leafNode>
               <tagNode name="prefix">
                 <properties>
                   <help>IPv6 prefix to be advertised in Router Advertisements (RAs)</help>
@@ -269,13 +283,13 @@
                 <children>
                   <leafNode name="no-autonomous-flag">
                     <properties>
-                      <help>Prefix can not be used for stateless address auto-configuration</help>
+                      <help>Prefix cannot be used for stateless address auto-configuration</help>
                       <valueless/>
                     </properties>
                   </leafNode>
                   <leafNode name="no-on-link-flag">
                     <properties>
-                      <help>Prefix can not be used for on-link determination</help>
+                      <help>Prefix cannot be used for on-link determination</help>
                       <valueless/>
                     </properties>
                   </leafNode>
@@ -289,6 +303,21 @@
                     <properties>
                       <help>Lifetime is decremented by the number of seconds since the last RA - use in conjunction with a DHCPv6-PD prefix</help>
                       <valueless/>
+                    </properties>
+                  </leafNode>
+                  <leafNode name="base-interface">
+                    <properties>
+                      <help>Prefix will be combined with IPv6 address of specified interface</help>
+                      <completionHelp>
+                        <script>${vyos_completion_dir}/list_interfaces</script>
+                      </completionHelp>
+                      <valueHelp>
+                        <format>txt</format>
+                        <description>Interface name</description>
+                      </valueHelp>
+                      <constraint>
+                        #include <include/constraint/interface-name.xml.i>
+                      </constraint>
                     </properties>
                   </leafNode>
                   <leafNode name="preferred-lifetime">
@@ -387,6 +416,12 @@
               <leafNode name="no-send-advert">
                 <properties>
                   <help>Do not send router adverts</help>
+                  <valueless/>
+                </properties>
+              </leafNode>
+              <leafNode name="no-send-interval">
+                <properties>
+                  <help>Do not send Advertisement Interval option in RAs</help>
                   <valueless/>
                 </properties>
               </leafNode>

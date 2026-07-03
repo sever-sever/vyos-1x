@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2017-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,7 +17,7 @@
 import os
 
 from glob import glob
-from netifaces import AF_INET
+from socket import AF_INET
 from sys import exit
 
 from vyos.config import Config
@@ -59,7 +59,7 @@ def verify(relay):
             raise ConfigError('At least two interfaces are required for UDP broadcast relay "{instance}"')
 
         for interface in config.get('interface', []):
-            verify_interface_exists(interface)
+            verify_interface_exists(relay, interface)
             if not is_afi_configured(interface, AF_INET):
                 raise ConfigError(f'Interface "{interface}" has no IPv4 address configured!')
 

@@ -16,11 +16,30 @@
           </valueHelp>
         </properties>
         <children>
+          <leafNode name="address">
+            <properties>
+              <help>IP address</help>
+              <completionHelp>
+                <list>dhcpv6</list>
+              </completionHelp>
+              <valueHelp>
+                <format>dhcpv6</format>
+                <description>Dynamic Host Configuration Protocol for IPv6</description>
+              </valueHelp>
+              <constraint>
+                <regex>(dhcpv6)</regex>
+              </constraint>
+              <multi/>
+            </properties>
+          </leafNode>
           #include <include/pppoe-access-concentrator.xml.i>
           #include <include/interface/authentication.xml.i>
           #include <include/interface/dial-on-demand.xml.i>
           #include <include/interface/no-default-route.xml.i>
           #include <include/interface/default-route-distance.xml.i>
+          <leafNode name="default-route-distance">
+            <defaultValue>1</defaultValue>
+          </leafNode>
           #include <include/interface/dhcpv6-options.xml.i>
           #include <include/generic-description.xml.i>
           #include <include/interface/disable.xml.i>
@@ -85,6 +104,7 @@
                 </properties>
                 <children>
                   #include <include/interface/ipv6-address-autoconf.xml.i>
+                  #include <include/interface/ipv6-address-interface-identifier.xml.i>
                 </children>
               </node>
               #include <include/interface/adjust-mss.xml.i>

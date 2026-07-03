@@ -1,0 +1,54 @@
+{
+    "vpp": {
+        "ethernet": ["interfaces_ethernet"],
+        "vpp_interfaces_bonding": ["vpp_interfaces_bonding"],
+        "vpp_interfaces_bridge": ["vpp_interfaces_bridge"],
+        "vpp_interfaces_gre": ["vpp_interfaces_gre"],
+        "vpp_interfaces_ipip": ["vpp_interfaces_ipip"],
+        "vpp_interfaces_loopback": ["vpp_interfaces_loopback"],
+        "vpp_interfaces_vxlan": ["vpp_interfaces_vxlan"],
+        "vpp_interfaces_xconnect": ["vpp_interfaces_xconnect"],
+        "vpp_acl": ["vpp_acl"],
+        "vpp_ipfix": ["vpp_ipfix"],
+        "vpp_nat_nat44": ["vpp_nat_nat44"],
+        "vpp_nat_cgnat": ["vpp_nat_cgnat"],
+        "vpp_sflow": ["vpp_sflow"],
+        "pppoe_server": ["service_pppoe-server"]
+    },
+    "vpp_interfaces_bonding": {
+        "vpp_interfaces_xconnect": ["vpp_interfaces_xconnect"],
+        "vpp_interfaces_bridge": ["vpp_interfaces_bridge"],
+        "vpp_acl": ["vpp_acl"],
+        "vpp_nat_nat44": ["vpp_nat_nat44"],
+        "vpp_nat_cgnat": ["vpp_nat_cgnat"],
+        "vpp_ipfix": ["vpp_ipfix"],
+        "pppoe_server": ["service_pppoe-server"]
+    },
+    "vpp_interfaces_gre": {
+        "vpp_interfaces_xconnect": ["vpp_interfaces_xconnect"],
+        "vpp_interfaces_bridge": ["vpp_interfaces_bridge"],
+        "vpp_acl": ["vpp_acl"],
+        "vpp_nat_nat44": ["vpp_nat_nat44"],
+        "vpp_nat_cgnat": ["vpp_nat_cgnat"]
+    },
+    "vpp_interfaces_ipip": {
+        "vpp_interfaces_xconnect": ["vpp_interfaces_xconnect"],
+        "vpp_acl": ["vpp_acl"],
+        "vpp_nat_nat44": ["vpp_nat_nat44"],
+        "vpp_nat_cgnat": ["vpp_nat_cgnat"]
+    },
+    "vpp_interfaces_loopback": {
+        "vpp_interfaces_bridge": ["vpp_interfaces_bridge"],
+        "vpp_acl": ["vpp_acl"],
+        "vpp_nat_nat44": ["vpp_nat_nat44"],
+        "vpp_nat_cgnat": ["vpp_nat_cgnat"]
+    },
+    "vpp_interfaces_vxlan": {
+        "vpp_interfaces_bridge": ["vpp_interfaces_bridge"],
+        "vpp_interfaces_xconnect": ["vpp_interfaces_xconnect"],
+        "vpp_acl": ["vpp_acl"],
+        "vpp_nat_nat44": ["vpp_nat_nat44"],
+        "vpp_nat_cgnat": ["vpp_nat_cgnat"]
+    }
+}
+

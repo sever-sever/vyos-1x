@@ -1,4 +1,4 @@
-# Copyright 2019 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -38,13 +38,12 @@ def message(message, flag='', destination=sys.stdout):
     if not logfile:
         return enable
 
+    mask = os.umask(0o111)
     try:
         # at boot the file is created as root:vyattacfg
         # at runtime the file is created as user:vyattacfg
         # but the helper scripts are not run as this so it
         # need the default permission to be 666 (an not 660)
-        mask = os.umask(0o111)
-
         with open(logfile, 'a') as f:
             f.write(_timed(_format('log', message)))
     finally:
@@ -65,7 +64,7 @@ def enabled(flag):
      - command: print command run with result
 
     Having the flag setup on the filesystem is required to have
-    debuging at boot time, however, setting the flag via environment
+    debugging at boot time, however, setting the flag via environment
     does not require a seek to the filesystem and is more efficient
     it can be done on the shell on via .bashrc for the user
 

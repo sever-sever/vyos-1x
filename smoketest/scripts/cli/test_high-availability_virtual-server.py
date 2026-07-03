@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -38,6 +38,8 @@ class TestHAVirtualServer(VyOSUnitTestSHIM.TestCase):
 
         # Process must be terminated after deleting the config
         self.assertFalse(process_named_running(PROCESS_NAME))
+        # always forward to base class
+        super().tearDown()
 
     def test_01_ha_virtual_server(self):
         algo = 'least-connection'
@@ -80,6 +82,13 @@ class TestHAVirtualServer(VyOSUnitTestSHIM.TestCase):
             self.assertIn(f'real_server {rs} {rport}', config)
             self.assertIn(f'{proto.upper()}_CHECK', config)
             self.assertIn(f'connect_timeout {connection_timeout}', config)
+
+        # Verify persistence_timeout is not set when value is 0
+        self.cli_set(vserver_base + [vs, 'persistence-timeout', '0'])
+        self.cli_commit()
+
+        config = read_file(KEEPALIVED_CONF)
+        self.assertNotIn('persistence_timeout', config)
 
     def test_02_ha_virtual_server_and_vrrp(self):
         algo = 'least-connection'
@@ -146,4 +155,4 @@ class TestHAVirtualServer(VyOSUnitTestSHIM.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

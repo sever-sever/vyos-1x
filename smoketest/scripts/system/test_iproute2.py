@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -21,7 +21,7 @@ class TestIproute2(unittest.TestCase):
     def test_ip_is_symlink(self):
         # For an unknown reason VyOS 1.3.0-rc2 did not have a symlink from
         # /usr/sbin/ip -> /bin/ip - verify this now and forever
-        real_file = '/bin/ip'
+        real_file = '../bin/ip'
         symlink = '/usr/sbin/ip'
         self.assertTrue(os.path.islink(symlink))
         self.assertFalse(os.path.islink(real_file))

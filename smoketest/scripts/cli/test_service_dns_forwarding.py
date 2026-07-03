@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -26,6 +26,7 @@ from vyos.utils.process import process_named_running
 
 PDNS_REC_RUN_DIR = '/run/pdns-recursor'
 CONFIG_FILE = f'{PDNS_REC_RUN_DIR}/recursor.conf'
+PDNS_REC_LUA_CONF_FILE = f'{PDNS_REC_RUN_DIR}/recursor.conf.lua'
 FORWARD_FILE = f'{PDNS_REC_RUN_DIR}/recursor.forward-zones.conf'
 HOSTSD_FILE = f'{PDNS_REC_RUN_DIR}/recursor.vyos-hostsd.conf.lua'
 PROCESS_NAME= 'pdns_recursor'
@@ -48,6 +49,14 @@ class TestServicePowerDNS(VyOSUnitTestSHIM.TestCase):
         # out the current configuration :)
         cls.cli_delete(cls, base_path)
 
+    def setUp(self):
+        # always forward to base class
+        super().setUp()
+        for network in allow_from:
+            self.cli_set(base_path + ['allow-from', network])
+        for address in listen_adress:
+            self.cli_set(base_path + ['listen-address', address])
+
     def tearDown(self):
         # Check for running process
         self.assertTrue(process_named_running(PROCESS_NAME))
@@ -58,14 +67,8 @@ class TestServicePowerDNS(VyOSUnitTestSHIM.TestCase):
 
         # Check for running process
         self.assertFalse(process_named_running(PROCESS_NAME))
-
-    def setUp(self):
-        # forward to base class
-        super().setUp()
-        for network in allow_from:
-            self.cli_set(base_path + ['allow-from', network])
-        for address in listen_adress:
-            self.cli_set(base_path + ['listen-address', address])
+        # always forward to base class
+        super().tearDown()
 
     def test_basic_forwarding(self):
         # Check basic DNS forwarding settings
@@ -127,6 +130,28 @@ class TestServicePowerDNS(VyOSUnitTestSHIM.TestCase):
         # verify default port configuration
         tmp = get_config_value('local-port')
         self.assertEqual(tmp, '53')
+
+    # PowerDNS cache-related recursor options
+    def test_recursor_cache_options(self):
+        ttl_percent = '10'
+        nothing_below_nxdomain = 'yes'
+        minimum_ttl_override = '30'
+
+        self.cli_set(base_path + ['ttl-percent', ttl_percent])
+        self.cli_set(base_path + ['nothing-below-nxdomain', nothing_below_nxdomain])
+        self.cli_set(base_path + ['minimum-ttl-override', minimum_ttl_override])
+
+        self.cli_commit()
+
+        self.assertEqual(get_config_value('refresh-on-ttl-perc'), ttl_percent)
+        self.assertEqual(get_config_value('nothing-below-nxdomain'), nothing_below_nxdomain)
+        self.assertEqual(get_config_value('minimum-ttl-override'), minimum_ttl_override)
+
+    def test_nothing_below_nxdomain(self):
+        for option in ['no', 'dnssec', 'yes']:
+            self.cli_set(base_path + ['nothing-below-nxdomain', option])
+            self.cli_commit()
+            self.assertEqual(get_config_value('nothing-below-nxdomain'), option)
 
     def test_dnssec(self):
         # DNSSEC option testing
@@ -300,6 +325,44 @@ class TestServicePowerDNS(VyOSUnitTestSHIM.TestCase):
         self.assertRegex(zone_config, fr'test\s+\d+\s+NS\s+ns1\.{test_zone}\.')
         self.assertRegex(zone_config, fr'test\s+\d+\s+NS\s+ns2\.{test_zone}\.')
 
+    def test_zone_cache_url(self):
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'source', 'url', 'https://www.internic.net/domain/root.zone'])
+        self.cli_commit()
+
+        lua_config = read_file(PDNS_REC_LUA_CONF_FILE)
+        self.assertIn('zoneToCache("smoketest", "url", "https://www.internic.net/domain/root.zone", { dnssec = "validate", zonemd = "validate", maxReceivedMBytes = 0, retryOnErrorPeriod = 60, refreshPeriod = 86400, timeout = 20 })', lua_config)
+
+    def test_zone_cache_axfr(self):
+
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'source', 'axfr', '127.0.0.1'])
+        self.cli_commit()
+
+        lua_config = read_file(PDNS_REC_LUA_CONF_FILE)
+        self.assertIn('zoneToCache("smoketest", "axfr", "127.0.0.1", { dnssec = "validate", zonemd = "validate", maxReceivedMBytes = 0, retryOnErrorPeriod = 60, refreshPeriod = 86400, timeout = 20 })', lua_config)
+
+    def test_zone_cache_options(self):
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'source', 'url', 'https://www.internic.net/domain/root.zone'])
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'options', 'dnssec', 'ignore'])
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'options', 'max-zone-size', '100'])
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'options', 'refresh', 'interval', '10'])
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'options', 'retry-interval', '90'])
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'options', 'timeout', '50'])
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'options', 'zonemd', 'require'])
+        self.cli_commit()
+
+        lua_config = read_file(PDNS_REC_LUA_CONF_FILE)
+        self.assertIn('zoneToCache("smoketest", "url", "https://www.internic.net/domain/root.zone", { dnssec = "ignore", maxReceivedMBytes = 100, refreshPeriod = 10, retryOnErrorPeriod = 90, timeout = 50, zonemd = "require" })', lua_config)
+
+    def test_zone_cache_wrong_source(self):
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'source', 'url', 'https://www.internic.net/domain/root.zone'])
+        self.cli_set(base_path + ['zone-cache', 'smoketest', 'source', 'axfr', '127.0.0.1'])
+
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        # correct config to correct finish the test
+        self.cli_delete(base_path + ['zone-cache', 'smoketest', 'source', 'axfr'])
+        self.cli_commit()
+
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

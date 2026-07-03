@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -25,11 +25,17 @@ def migrate(config: ConfigTree) -> None:
         # Remove 'encryption cipher' and add this value to 'encryption ncp-ciphers'
         # for server and client mode.
         # Site-to-site mode still can use --cipher option
+        mode_path = ['interfaces', 'openvpn', i, 'mode']
         cipher_path = ['interfaces', 'openvpn', i, 'encryption', 'cipher']
         ncp_cipher_path = ['interfaces', 'openvpn', i, 'encryption', 'ncp-ciphers']
+
         if config.exists(cipher_path):
             if config.exists(['interfaces', 'openvpn', i, 'shared-secret-key']):
                 continue
+            # Only migrate if mode is not 'site-to-site'
+            if config.value_exists(mode_path, 'site-to-site'):
+                continue
+
             cipher = config.return_value(cipher_path)
             config.delete(cipher_path)
             if cipher == 'none':

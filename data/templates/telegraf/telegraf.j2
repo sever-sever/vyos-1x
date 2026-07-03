@@ -42,17 +42,24 @@
 ### End InfluxDB2 ###
 {% endif %}
 {% if loki is vyos_defined %}
+{%     set parsed = loki.url | parse_url %}
+{%     set base_url = parsed.scheme ~ '://' ~ parsed.hostname %}
+{%     set endpoint = parsed.path if parsed.path and parsed.path != '/' else '' %}
 ### Loki ###
 [[outputs.loki]]
   ## The domain of Loki
-  domain = "{{ loki.url }}:{{ loki.port }}"
+  domain = "{{ base_url }}:{{ loki.port }}"
+{%     if endpoint %}
+  ## Endpoint to write api
+  endpoint = "{{ endpoint }}"
+{%     endif %}
 {%     if loki.authentication.username is vyos_defined and loki.authentication.password is vyos_defined  %}
   ## Basic Authentication
   username = "{{ loki.authentication.username }}"
   password = "{{ loki.authentication.password }}"
 {%     endif %}
 {%     if loki.metric_name_label is vyos_defined %}
-metric_name_label = "{{ loki.metric_name_label }}"
+  metric_name_label = "{{ loki.metric_name_label }}"
 {%     endif %}
 ### End Loki ###
 {% endif %}

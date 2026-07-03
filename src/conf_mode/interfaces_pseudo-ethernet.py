@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,16 +17,19 @@
 from sys import exit
 
 from vyos.config import Config
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configdict import get_interface_dict
-from vyos.configdict import is_node_changed
 from vyos.configdict import is_source_interface
 from vyos.configdict import is_node_changed
+from vyos.configdict import is_vrf_changed
 from vyos.configverify import verify_vrf
 from vyos.configverify import verify_address
 from vyos.configverify import verify_bridge_delete
 from vyos.configverify import verify_source_interface
 from vyos.configverify import verify_vlan_config
 from vyos.configverify import verify_mtu_parent
+from vyos.configverify import verify_mtu_ipv6
 from vyos.configverify import verify_mirror_redirect
 from vyos.ifconfig import MACVLANIf
 from vyos.utils.network import interface_exists
@@ -37,7 +40,7 @@ airbag.enable()
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at
     least the interface name will be added or a deleted flag
     """
     if config:
@@ -60,7 +63,44 @@ def get_config(config=None):
         tmp = is_source_interface(conf, peth['source_interface'], ['macsec'])
         if tmp and tmp != ifname: peth.update({'is_source_interface' : tmp})
 
+    # Protocols static arp dependency
+    if 'static_arp' in peth:
+        set_dependents('static_arp', conf)
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
+
     return peth
+
+def _verify_anycast_gateway(peth: dict):
+    """Validate anycast-gateway requirements."""
+
+    if 'anycast_gateway' not in peth:
+        return
+
+    ifname = peth['ifname']
+
+    # Requirement 1: MAC address must be explicitly configured
+    if 'mac' not in peth:
+        raise ConfigError(
+            f'Anycast-gateway requires an explicit MAC address to be set on interface {ifname}. '
+            f'Use: set interfaces pseudo-ethernet {ifname} mac <mac>'
+        )
+
+    # Requirement 2: source-interface must be a bridge or bridge sub-interface
+    source_iface = peth.get('source_interface')
+    if not source_iface:
+        raise ConfigError(
+            f'Anycast-gateway requires source-interface to be set on interface {ifname}'
+        )
+
+    if not source_iface.startswith('br'):
+        raise ConfigError(
+            'Anycast-gateway requires source-interface to be a bridge '
+            'or a bridge vlan interface (e.g. br0 or br0.100), but '
+            f'"{source_iface}" is neither of these two.'
+        )
 
 def verify(peth):
     if 'deleted' in peth:
@@ -71,9 +111,12 @@ def verify(peth):
     verify_vrf(peth)
     verify_address(peth)
     verify_mtu_parent(peth, peth['parent'])
+    verify_mtu_ipv6(peth)
     verify_mirror_redirect(peth)
     # use common function to verify VLAN configuration
     verify_vlan_config(peth)
+
+    _verify_anycast_gateway(peth)
 
     return None
 
@@ -92,6 +135,9 @@ def apply(peth):
     if 'deleted' not in peth:
         p = MACVLANIf(**peth)
         p.update(peth)
+
+    # run the dependents
+    call_dependents()
 
     return None
 

@@ -14,8 +14,14 @@
     #include <include/firewall/geoip.xml.i>
     #include <include/firewall/mac-address.xml.i>
     #include <include/firewall/port.xml.i>
-    #include <include/firewall/source-destination-group.xml.i>
+    #include <include/firewall/source-destination-group-ipv4.xml.i>
+    <node name="group">
+      <children>
+        #include <include/firewall/mac-group.xml.i>
+      </children>
+    </node>
     #include <include/firewall/source-destination-dynamic-group.xml.i>
+    #include <include/firewall/source-destination-remote-group.xml.i>
   </children>
 </node>
 <leafNode name="jump-target">
@@ -37,8 +43,14 @@
     #include <include/firewall/geoip.xml.i>
     #include <include/firewall/mac-address.xml.i>
     #include <include/firewall/port.xml.i>
-    #include <include/firewall/source-destination-group.xml.i>
+    #include <include/firewall/source-destination-group-ipv4.xml.i>
+    <node name="group">
+      <children>
+        #include <include/firewall/mac-group.xml.i>
+      </children>
+    </node>
     #include <include/firewall/source-destination-dynamic-group.xml.i>
+    #include <include/firewall/source-destination-remote-group.xml.i>
   </children>
 </node>
 <!-- include end -->

@@ -1,20 +1,69 @@
 !
-{% if srv6.locator is vyos_defined %}
 segment-routing
+{% if traffic_engineering is vyos_defined %}
+ traffic-eng
+  mpls-te on
+{%     if traffic_engineering.database_import_protocol is vyos_defined %}
+{%         for protocol, protocol_config in traffic_engineering.database_import_protocol.items() %}
+  mpls-te import {{ protocol | replace('ospf', 'ospfv2') }}
+{%         endfor %}
+{%     endif %}
+{%     if traffic_engineering.segment_list is vyos_defined %}
+{%         for segment_list, segment_list_config in traffic_engineering.segment_list.items() %}
+  segment-list {{ segment_list }}
+{%             if segment_list_config.index.items() is vyos_defined %}
+{%                 for index, index_config in segment_list_config.index.items() %}
+{%                     if index_config.mpls.label is vyos_defined %}
+   index {{ index }} mpls label {{ index_config.mpls.label }}
+{%                     endif %}
+{%                     if index_config.nai is vyos_defined %}
+{%                         if index_config.nai.adjacency is vyos_defined %}
+{%                             for address_family, address_family_options in index_config.nai.adjacency.items() %}
+   index {{ index }} nai adjacency {{ address_family_options.source_identifier }} {{ address_family_options.destination_identifier }}
+{%                             endfor %}
+{%                         endif %}
+{%                         if index_config.nai.prefix is vyos_defined %}
+{%                             for address_family, address_family_options in index_config.nai.prefix.items() %}
+{%                                 for prefix, prefix_options in address_family_options.prefix_identifier.items() %}
+   index {{ index }} nai prefix {{ prefix }} {{ 'algorithm 0' if prefix_options.algorithm.spf is vyos_defined }} {{ 'algorithm 1' if prefix_options.algorithm.strict_spf is vyos_defined }}
+{%                                 endfor %}
+{%                             endfor %}
+{%                         endif %}
+{%                     endif %}
+{%                 endfor %}
+{%             endif %}
+{%         endfor %}
+{%     endif %}
+  exit
+{% endif %}
+!
+{% if srv6 is vyos_defined %}
  srv6
+{%     if srv6.encapsulation is vyos_defined %}
+  encapsulation
+{%         if srv6.encapsulation.source_address is vyos_defined %}
+   source-address {{ srv6.encapsulation.source_address }}
+{%         endif %}
+  exit
+{%     endif %}
+{%     if srv6.locator is vyos_defined %}
   locators
-{%     for locator, locator_config in srv6.locator.items() %}
+{%         for locator, locator_config in srv6.locator.items() %}
    locator {{ locator }}
-{%         if locator_config.prefix is vyos_defined %}
+{%             if locator_config.prefix is vyos_defined %}
     prefix {{ locator_config.prefix }} block-len {{ locator_config.block_len }} node-len {{ locator_config.node_len }} func-bits {{ locator_config.func_bits }}
-{%         endif %}
-{%         if locator_config.behavior_usid is vyos_defined %}
+{%             endif %}
+{%             if locator_config.behavior_usid is vyos_defined %}
     behavior usid
-{%         endif %}
+{%             endif %}
+{%             if locator_config.format is vyos_defined %}
+    format {{ locator_config.format }}
+{%             endif %}
     exit
     !
-{%     endfor %}
+{%         endfor %}
   exit
+{%     endif %}
   !
 exit
 !

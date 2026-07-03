@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,9 +18,12 @@ from sys import exit
 
 from vyos.base import Warning
 from vyos.config import Config
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configdict import get_interface_dict
 from vyos.configdict import leaf_node_changed
 from vyos.configdict import is_node_changed
+from vyos.configdict import is_vrf_changed
 from vyos.configdict import node_changed
 from vyos.configverify import verify_address
 from vyos.configverify import verify_bridge_delete
@@ -40,7 +43,7 @@ airbag.enable()
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least
     the interface name will be added or a deleted flag
     """
     if config:
@@ -66,7 +69,8 @@ def get_config(config=None):
         vxlan.update({'vlan_to_vni_removed': {}})
         for vlan in tmp:
             vni = leaf_node_changed(conf, base + [ifname, 'vlan-to-vni', vlan, 'vni'])
-            vxlan['vlan_to_vni_removed'].update({vlan : {'vni' : vni[0]}})
+            if vni:
+                vxlan['vlan_to_vni_removed'].update({vlan : {'vni' : vni[0]}})
 
     # We need to verify that no other VXLAN tunnel is configured when external
     # mode is in use - Linux Kernel limitation
@@ -82,6 +86,14 @@ def get_config(config=None):
     if len(vxlan['other_tunnels']) == 0:
         del vxlan['other_tunnels']
 
+    # Protocols static arp dependency
+    if 'static_arp' in vxlan:
+        set_dependents('static_arp', conf)
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
+
     return vxlan
 
 def verify(vxlan):
@@ -94,7 +106,9 @@ def verify(vxlan):
 
     if 'group' in vxlan:
         if 'source_interface' not in vxlan:
-            raise ConfigError('Multicast VXLAN requires an underlaying interface')
+            raise ConfigError('Multicast VXLAN requires an underlying interface')
+        if 'remote' in vxlan:
+            raise ConfigError('Both group and remote cannot be specified')
         verify_source_interface(vxlan)
 
     if not any(tmp in ['group', 'remote', 'source_address', 'source_interface'] for tmp in vxlan):
@@ -105,7 +119,7 @@ def verify(vxlan):
 
     if dict_search('parameters.external', vxlan) != None:
         if 'vni' in vxlan:
-            raise ConfigError('Can not specify both "external" and "VNI"!')
+            raise ConfigError('Cannot specify both "external" and "VNI"!')
 
         if 'other_tunnels' in vxlan:
             # When multiple VXLAN interfaces are defined and "external" is used,
@@ -116,7 +130,7 @@ def verify(vxlan):
                 if dict_search('parameters.vni_filter', tunnel_config) != None:
                     other_vni_filter = True
                     break
-            # eqivalent of the C foo ? 'a' : 'b' statement
+            # equivalent of the C foo ? 'a' : 'b' statement
             vni_filter = True and (dict_search('parameters.vni_filter', vxlan) != None) or False
             # If either one is enabled, so must be the other. Both can be off and both can be on
             if (vni_filter and not other_vni_filter) or (not vni_filter and other_vni_filter):
@@ -135,7 +149,7 @@ def verify(vxlan):
 
     if 'source_interface' in vxlan:
         # VXLAN adds at least an overhead of 50 byte - we need to check the
-        # underlaying device if our VXLAN package is not going to be fragmented!
+        # underlying device if our VXLAN package is not going to be fragmented!
         vxlan_overhead = 50
         if 'source_address' in vxlan and is_ipv6(vxlan['source_address']):
             # IPv6 adds an extra 20 bytes overhead because the IPv6 header is 20
@@ -150,8 +164,10 @@ def verify(vxlan):
 
         lower_mtu = Interface(vxlan['source_interface']).get_mtu()
         if lower_mtu < (int(vxlan['mtu']) + vxlan_overhead):
-            raise ConfigError(f'Underlaying device MTU is to small ({lower_mtu} '\
-                              f'bytes) for VXLAN overhead ({vxlan_overhead} bytes!)')
+            Warning(
+                f'Underlying device MTU is too small ({lower_mtu} '
+                f'bytes) for VXLAN overhead ({vxlan_overhead} bytes!)'
+            )
 
     # Check for mixed IPv4 and IPv6 addresses
     protocol = None
@@ -162,7 +178,7 @@ def verify(vxlan):
             protocol = 'ipv4'
 
     if 'remote' in vxlan:
-        error_msg = 'Can not mix both IPv4 and IPv6 for VXLAN underlay'
+        error_msg = 'Cannot mix both IPv4 and IPv6 for VXLAN underlay'
         for remote in vxlan['remote']:
             if is_ipv6(remote):
                 if protocol == 'ipv4':
@@ -245,6 +261,9 @@ def apply(vxlan):
         # Finally create the new interface
         v = VXLANIf(**vxlan)
         v.update(vxlan)
+
+    # run the dependents
+    call_dependents()
 
     return None
 

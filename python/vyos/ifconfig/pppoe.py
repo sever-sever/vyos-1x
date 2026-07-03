@@ -1,4 +1,4 @@
-# Copyright 2020-2022 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -15,11 +15,11 @@
 
 from vyos.ifconfig.interface import Interface
 from vyos.utils.assertion import assert_range
+from vyos.utils.dict import dict_search
 from vyos.utils.network import get_interface_config
 
 @Interface.register
 class PPPoEIf(Interface):
-    iftype = 'pppoe'
     definition = {
         **Interface.definition,
         **{
@@ -71,15 +71,15 @@ class PPPoEIf(Interface):
         super().remove()
 
     def _create(self):
-        # we can not create this interface as it is managed outside
+        # we cannot create this interface as it is managed outside
         pass
 
     def _delete(self):
-        # we can not create this interface as it is managed outside
+        # we cannot create this interface as it is managed outside
         pass
 
     def del_addr(self, addr):
-        # we can not create this interface as it is managed outside
+        # we cannot create this interface as it is managed outside
         pass
 
     def get_mac(self):
@@ -102,9 +102,9 @@ class PPPoEIf(Interface):
         self.set_interface('accept_ra_defrtr', enable)
 
     def update(self, config):
-        """ General helper function which works on a dictionary retrived by
+        """ General helper function which works on a dictionary retrieved by
         get_config_dict(). It's main intention is to consolidate the scattered
-        interface setup code and provide a single point of entry when workin
+        interface setup code and provide a single point of entry when working
         on any interface. """
 
         # Cache the configuration - it will be reused inside e.g. DHCP handler
@@ -114,14 +114,6 @@ class PPPoEIf(Interface):
         # We need to copy this from super().update() as we utilize self.set_dhcpv6()
         # before this is done by the base class.
         self._config = config
-
-        # remove old routes from an e.g. old VRF assignment
-        if 'shutdown_required':
-            vrf = None
-            tmp = get_interface_config(self.ifname)
-            if 'master' in tmp:
-                vrf = tmp['master']
-            self._remove_routes(vrf)
 
         # DHCPv6 PD handling is a bit different on PPPoE interfaces, as we do
         # not require an 'address dhcpv6' CLI option as with other interfaces
@@ -148,3 +140,7 @@ class PPPoEIf(Interface):
             self._cmd(f'vtysh -c "conf t" {vrf} -c "ip route 0.0.0.0/0 {self.ifname} tag 210 {distance}"')
             if 'ipv6' in config:
                 self._cmd(f'vtysh -c "conf t" {vrf} -c "ipv6 route ::/0 {self.ifname} tag 210 {distance}"')
+
+        # kick RS when IPv6 is up.
+        if dict_search('ipv6.address.autoconf', config) is not None:
+            self._cmd(f'rdisc6 --single --retry 3 {self.ifname}')

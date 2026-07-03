@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -19,12 +19,11 @@ from vyos.utils.process import cmd
 
 modules = {
     "intel": ["e1000", "e1000e", "igb", "ixgbe", "ixgbevf", "i40e",
-              "i40evf", "iavf"],
+              "iavf", "ice"],
     "intel_qat": ["qat_200xx", "qat_200xxvf", "qat_c3xxx", "qat_c3xxxvf",
                   "qat_c62x", "qat_c62xvf", "qat_d15xx", "qat_d15xxvf",
                   "qat_dh895xcc", "qat_dh895xccvf"],
     "accel_ppp": ["ipoe", "vlan_mon"],
-    "openvpn": ["ovpn-dco-v2"]
 }
 
 class TestKernelModules(unittest.TestCase):

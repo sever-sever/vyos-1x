@@ -2,12 +2,12 @@
 <interfaceDefinition>
   <node name="update">
     <children>
-      <leafNode name="geoip">
+      <node name="geoip">
         <properties>
           <help>Update GeoIP database and firewall sets</help>
         </properties>
-        <command>sudo ${vyos_libexec_dir}/geoip-update.py --force</command>
-      </leafNode>
+        <command>sudo ${vyos_libexec_dir}/geoip-update.py</command>
+      </node>
     </children>
   </node>
 </interfaceDefinition>

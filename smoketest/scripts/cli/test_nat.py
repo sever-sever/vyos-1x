@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,7 +18,10 @@ import os
 import unittest
 
 from base_vyostest_shim import VyOSUnitTestSHIM
+from time import sleep
+
 from vyos.configsession import ConfigSessionError
+from vyos.utils.process import run
 
 base_path = ['nat']
 src_path = base_path + ['source']
@@ -42,6 +45,8 @@ class TestNAT(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
         self.assertFalse(os.path.exists(nftables_nat_config))
         self.assertFalse(os.path.exists(nftables_static_nat_conf))
+        # always forward to base class
+        super().tearDown()
 
     def wait_for_domain_resolver(self, table, set_name, element, max_wait=10):
         # Resolver no longer blocks commit, need to wait for daemon to populate set
@@ -84,7 +89,7 @@ class TestNAT(VyOSUnitTestSHIM.TestCase):
         address_group = 'smoketest_addr'
         address_group_member = '192.0.2.1'
         interface_group = 'smoketest_ifaces'
-        interface_group_member = 'bond.99'
+        interface_group_member = 'eth0'
 
         self.cli_set(['firewall', 'group', 'address-group', address_group, 'address', address_group_member])
         self.cli_set(['firewall', 'group', 'interface-group', interface_group, 'interface', interface_group_member])
@@ -304,5 +309,31 @@ class TestNAT(VyOSUnitTestSHIM.TestCase):
 
         self.verify_nftables(nftables_search, 'ip vyos_nat')
 
+    def test_nat_fqdn(self):
+        source_domain = 'vyos.dev'
+        destination_domain = 'vyos.io'
+
+        self.cli_set(src_path + ['rule', '1', 'outbound-interface', 'name', 'eth0'])
+        self.cli_set(src_path + ['rule', '1', 'source', 'fqdn', source_domain])
+        self.cli_set(src_path + ['rule', '1', 'translation', 'address', 'masquerade'])
+
+        self.cli_set(dst_path + ['rule', '1', 'destination', 'fqdn', destination_domain])
+        self.cli_set(dst_path + ['rule', '1', 'source', 'fqdn', source_domain])
+        self.cli_set(dst_path + ['rule', '1', 'destination', 'port', '5122'])
+        self.cli_set(dst_path + ['rule', '1', 'protocol', 'tcp'])
+        self.cli_set(dst_path + ['rule', '1', 'translation', 'address', '198.51.100.1'])
+        self.cli_set(dst_path + ['rule', '1', 'translation', 'port', '22'])
+
+
+        self.cli_commit()
+
+        nftables_search = [
+            ['set FQDN_nat_destination_1_d'],
+            ['set FQDN_nat_source_1_s'],
+            ['oifname "eth0"', 'ip saddr @FQDN_nat_source_1_s', 'masquerade', 'comment "SRC-NAT-1"'],
+            ['tcp dport 5122', 'ip saddr @FQDN_nat_destination_1_s', 'ip daddr @FQDN_nat_destination_1_d', 'dnat to 198.51.100.1:22', 'comment "DST-NAT-1"']
+        ]
+
+        self.verify_nftables(nftables_search, 'ip vyos_nat')
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

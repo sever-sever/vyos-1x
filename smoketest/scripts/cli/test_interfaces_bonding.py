@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,6 +18,7 @@ import os
 import unittest
 
 from base_interfaces_test import BasicInterfaceTest
+from base_vyostest_shim import VyOSUnitTestSHIM
 
 from vyos.ifconfig import Section
 from vyos.ifconfig.interface import Interface
@@ -29,7 +30,6 @@ class BondingInterfaceTest(BasicInterfaceTest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._base_path = ['interfaces', 'bonding']
-        cls._mirror_interfaces = ['dum21354']
         cls._members = []
 
         # we need to filter out VLAN interfaces identified by a dot (.)
@@ -61,6 +61,53 @@ class BondingInterfaceTest(BasicInterfaceTest.TestCase):
         for interface in self._interfaces:
             slaves = read_file(f'/sys/class/net/{interface}/bonding/slaves').split()
             self.assertListEqual(slaves, self._members)
+
+    def test_bonding_keep_mac(self):
+        # T7571: A bond interface should always run from the physical interfaces
+        # MAC address and not a synthetic one.
+        base_mac = Interface(self._members[0]).get_mac()
+
+        # configure member interfaces
+        for interface in self._interfaces:
+            for option in self._options.get(interface, []):
+                self.cli_set(self._base_path + [interface] + option.split())
+
+        self.cli_commit()
+
+        # Verify bond interface MAC address matches the address of it's first member
+        for interface in self._interfaces:
+            mac = Interface(interface).get_mac()
+            self.assertEqual(mac, base_mac)
+
+    def test_bonding_physical_macs(self):
+        macs = {}
+        # configure member interfaces
+        for interface in self._interfaces:
+            for member in self._members:
+                macs[member] =  get_interface_config(member)['address']
+
+            for option in self._options.get(interface, []):
+                self.cli_set(self._base_path + [interface] + option.split())
+
+        self.cli_commit()
+
+        # mac must match the MAC of the first interface
+        for interface in self._interfaces:
+            bond_mac = get_interface_config(interface)['address']
+            self.assertEqual(bond_mac, macs[self._members[0]])
+
+        # remove all member interfaces from the bond
+        for interface in self._interfaces:
+            self.cli_delete(self._base_path + [interface, 'member'])
+
+        self.cli_commit()
+
+        # members must re-gain their old MAC address
+        for interface in self._interfaces:
+            for member in self._members:
+                tmp = Interface(member)
+                self.assertEqual(tmp.get_mac(), macs[member])
+                self.assertEqual(tmp.get_admin_state(), 'up')
 
     def test_bonding_remove_member(self):
         # T2515: when removing a bond member the previously enslaved/member
@@ -167,17 +214,24 @@ class BondingInterfaceTest(BasicInterfaceTest.TestCase):
 
     def test_bonding_multi_use_member(self):
         # Define available bonding hash policies
-        for interface in ['bond10', 'bond20']:
+        bonds = ['bond10', 'bond20', 'bond30']
+        for interface in bonds:
             for member in self._members:
                 self.cli_set(self._base_path + [interface, 'member', 'interface', member])
 
-        # check validate() - can not use the same member interfaces multiple times
+        # check validate() - cannot use the same member interfaces multiple times
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
-
-        self.cli_delete(self._base_path + ['bond20'])
+        # only keep the first bond interface configuration
+        for interface in bonds[1:]:
+            self.cli_delete(self._base_path + [interface])
 
         self.cli_commit()
+
+        bond = bonds[0]
+        member_ifaces = read_file(f'/sys/class/net/{bond}/bonding/slaves').split()
+        for member in self._members:
+            self.assertIn(member, member_ifaces)
 
     def test_bonding_source_interface(self):
         # Re-use member interface that is already a source-interface
@@ -188,7 +242,7 @@ class BondingInterfaceTest(BasicInterfaceTest.TestCase):
         self.cli_set(self._base_path + [bond, 'member', 'interface', member])
         self.cli_set(['interfaces', 'pppoe', pppoe, 'source-interface', member])
 
-        # check validate() - can not add interface to bond, it is the source-interface of ...
+        # check validate() - cannot add interface to bond, it is the source-interface of ...
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
 
@@ -208,7 +262,7 @@ class BondingInterfaceTest(BasicInterfaceTest.TestCase):
         self.cli_set(self._base_path + [bond, 'member', 'interface', member])
         self.cli_set(['interfaces', 'bridge', bridge, 'member', 'interface', member])
 
-        # check validate() - can not add interface to bond, it is a member of bridge ...
+        # check validate() - cannot add interface to bond, it is a member of bridge ...
         with self.assertRaises(ConfigSessionError):
             self.cli_commit()
 
@@ -286,7 +340,7 @@ class BondingInterfaceTest(BasicInterfaceTest.TestCase):
 
         id = '5'
         for interface in self._interfaces:
-            frrconfig = self.getFRRconfig(f'interface {interface}', daemon='zebra')
+            frrconfig = self.getFRRconfig(f'interface {interface}', stop_section='^exit')
 
             self.assertIn(f' evpn mh es-id {id}', frrconfig)
             self.assertIn(f' evpn mh es-df-pref {id}', frrconfig)
@@ -303,11 +357,35 @@ class BondingInterfaceTest(BasicInterfaceTest.TestCase):
 
         id = '5'
         for interface in self._interfaces:
-            frrconfig = self.getFRRconfig(f'interface {interface}', daemon='zebra')
+            frrconfig = self.getFRRconfig(f'interface {interface}', stop_section='^exit')
             self.assertIn(f' evpn mh es-sys-mac 00:12:34:56:78:0{id}', frrconfig)
             self.assertIn(f' evpn mh uplink', frrconfig)
 
             id = int(id) + 1
 
+    def test_bonding_member_mtu(self):
+        # This Smoketest only works on our CI platform where we force the NIC
+        # to virtio and an MTU of only 1500 bytes max
+        if not os.path.exists('/tmp/vyos.smoketests.hint'):
+            self.skipTest('Not running under VyOS CI/CD QEMU environment!')
+
+        for interface in self._interfaces:
+            for option in self._options.get(interface, []):
+                self.cli_set(self._base_path + [interface] + option.split())
+
+            self.cli_set(self._base_path + [interface, 'mtu', '10000'])
+
+        # check validate() - MTU of bond higher then virtio max MTU
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        for interface in self._interfaces:
+            for option in self._options.get(interface, []):
+                self.cli_set(self._base_path + [interface] + option.split())
+
+            self.cli_delete(self._base_path + [interface, 'mtu'])
+
+        self.cli_commit()
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

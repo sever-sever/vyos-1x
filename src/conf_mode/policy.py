@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2021-2022 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -14,18 +14,30 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import re
 from sys import exit
 
 from vyos.config import Config
-from vyos.configdict import dict_merge
-from vyos.template import render_to_string
+from vyos.configverify import has_frr_protocol_in_dict
+from vyos.frrender import FRRender
+from vyos.frrender import frr_protocols
+from vyos.frrender import get_frrender_dict
 from vyos.utils.dict import dict_search
+from vyos.utils.process import is_systemd_service_running
 from vyos import ConfigError
-from vyos import frr
+from vyos.base import Warning
 from vyos import airbag
-
 airbag.enable()
 
+# Sanity checks for large-community-list regex:
+# * Require complete 3-tuples, no blank members. Catch missed & doubled colons.
+# * Permit appropriate community separators (whitespace, underscore)
+# * Permit common regex between tuples while requiring at least one separator
+#   (eg, "1:1:1_.*_4:4:4", matching "1:1:1 4:4:4" and "1:1:1 2:2:2 4:4:4",
+#        but not "1:1:13 24:4:4")
+# Best practice: stick with basic patterns, mind your wildcards and whitespace.
+# Regex that doesn't match this pattern will be allowed with a warning. 
+large_community_regex_pattern = r'([^: _]+):([^: _]+):([^: _]+)([ _]([^:]+):([^: _]+):([^: _]+))*'
 
 def community_action_compatibility(actions: dict) -> bool:
     """
@@ -87,31 +99,27 @@ def get_config(config=None):
     else:
         conf = Config()
 
-    base = ['policy']
-    policy = conf.get_config_dict(base, key_mangling=('-', '_'),
-                                  get_first_key=True,
-                                  no_tag_node_value_mangle=True)
-
-    # We also need some additional information from the config, prefix-lists
-    # and route-maps for instance. They will be used in verify().
-    #
-    # XXX: one MUST always call this without the key_mangling() option! See
-    # vyos.configverify.verify_common_route_maps() for more information.
-    tmp = conf.get_config_dict(['protocols'], key_mangling=('-', '_'),
-                               no_tag_node_value_mangle=True)
-    # Merge policy dict into "regular" config dict
-    policy = dict_merge(tmp, policy)
-    return policy
+    return get_frrender_dict(conf)
 
 
-def verify(policy):
-    if not policy:
+def verify(config_dict):
+    if not has_frr_protocol_in_dict(config_dict, 'policy'):
         return None
 
-    for policy_type in ['access_list', 'access_list6', 'as_path_list',
-                        'community_list', 'extcommunity_list',
-                        'large_community_list',
-                        'prefix_list', 'prefix_list6', 'route_map']:
+    policy_types = ['access_list', 'access_list6', 'as_path_list',
+                    'community_list', 'extcommunity_list',
+                    'large_community_list', 'prefix_list',
+                    'prefix_list6', 'route_map']
+
+    policy = config_dict['policy']
+    for protocol in frr_protocols:
+        if protocol not in config_dict:
+            continue
+        if 'protocol' not in policy:
+            policy.update({'protocol': {}})
+        policy['protocol'].update({protocol : config_dict[protocol]})
+
+    for policy_type in policy_types:
         # Bail out early and continue with next policy type
         if policy_type not in policy:
             continue
@@ -123,7 +131,7 @@ def verify(policy):
             if 'rule' not in instance_config:
                 continue
 
-            # human readable instance name (hypen instead of underscore)
+            # human readable instance name (hyphen instead of underscore)
             policy_hr = policy_type.replace('_', '-')
             entries = []
             for rule, rule_config in instance_config['rule'].items():
@@ -151,9 +159,33 @@ def verify(policy):
                     if 'regex' not in rule_config:
                         raise ConfigError(f'A regex {mandatory_error}')
 
+                if policy_type == 'large_community_list':
+                    if not re.fullmatch(large_community_regex_pattern, rule_config['regex']):
+                        Warning(f'"policy large-community-list {instance} rule {rule} regex" does not follow expected form and may not match as expected.')
+
                 if policy_type in ['prefix_list', 'prefix_list6']:
                     if 'prefix' not in rule_config:
                         raise ConfigError(f'A prefix {mandatory_error}')
+
+                    mask_len = int(rule_config['prefix'].split('/')[1])
+                    ge = dict_search('ge', rule_config)
+                    le = dict_search('le', rule_config)
+
+                    if ge and int(ge) < mask_len:
+                        raise ConfigError(
+                            f'{policy_hr} {instance} rule {rule}: "ge" ({ge}) must be >= '
+                            f'prefix length ({mask_len})'
+                        )
+                    if le and int(le) < mask_len:
+                        raise ConfigError(
+                            f'{policy_hr} {instance} rule {rule}: "le" ({le}) must be >= '
+                            f'prefix length ({mask_len})'
+                        )
+                    if ge and le and int(ge) > int(le):
+                        raise ConfigError(
+                            f'{policy_hr} {instance} rule {rule}: "ge" ({ge}) must be <= '
+                            f'"le" ({le})'
+                        )
 
                     if rule_config in entries:
                         raise ConfigError(
@@ -167,10 +199,10 @@ def verify(policy):
                 continue
 
             for rule, rule_config in route_map_config['rule'].items():
-                # Action 'deny' cannot be used with "continue"
-                # FRR does not validate it T4827
-                if rule_config['action'] == 'deny' and 'continue' in rule_config:
-                    raise ConfigError(f'rule {rule} "continue" cannot be used with action deny!')
+                # Action 'deny' cannot be used with "continue" or "on-match"
+                # FRR does not validate it T4827, T6676
+                if rule_config['action'] == 'deny' and ('continue' in rule_config or 'on_match' in rule_config):
+                    raise ConfigError(f'rule {rule} "continue" or "on-match" cannot be used with action deny!')
 
                 # Specified community-list must exist
                 tmp = dict_search('match.community.community_list',
@@ -244,73 +276,37 @@ def verify(policy):
     # When routing protocols are active some use prefix-lists, route-maps etc.
     # to apply the systems routing policy to the learned or redistributed routes.
     # When the "routing policy" changes and policies, route-maps etc. are deleted,
-    # it is our responsibility to verify that the policy can not be deleted if it
+    # it is our responsibility to verify that the policy cannot be deleted if it
     # is used by any routing protocol
-    if 'protocols' in policy:
-        for policy_type in ['access_list', 'access_list6', 'as_path_list',
-                            'community_list',
-                            'extcommunity_list', 'large_community_list',
-                            'prefix_list', 'route_map']:
-            if policy_type in policy:
-                for policy_name in list(set(routing_policy_find(policy_type,
-                                                                policy[
-                                                                    'protocols']))):
-                    found = False
-                    if policy_name in policy[policy_type]:
-                        found = True
-                    # BGP uses prefix-list for selecting both an IPv4 or IPv6 AFI related
-                    # list - we need to go the extra mile here and check both prefix-lists
-                    if policy_type == 'prefix_list' and 'prefix_list6' in policy and policy_name in \
-                            policy['prefix_list6']:
-                        found = True
-                    if not found:
-                        tmp = policy_type.replace('_', '-')
-                        raise ConfigError(
-                            f'Can not delete {tmp} "{policy_name}", still in use!')
+    # Check if any routing protocol is activated
+    if 'protocol' in policy:
+        for policy_type in policy_types:
+            for policy_name in list(set(routing_policy_find(policy_type, policy['protocol']))):
+                found = False
+                if policy_type in policy and policy_name in policy[policy_type]:
+                    found = True
+                # BGP uses prefix-list for selecting both an IPv4 or IPv6 AFI related
+                # list - we need to go the extra mile here and check both prefix-lists
+                if policy_type == 'prefix_list' and 'prefix_list6' in policy and policy_name in \
+                        policy['prefix_list6']:
+                    found = True
+                if not found:
+                    tmp = policy_type.replace('_', '-')
+                    raise ConfigError(
+                        f'Cannot delete {tmp} "{policy_name}", still in use!')
 
     return None
 
 
-def generate(policy):
-    if not policy:
-        return None
-    policy['new_frr_config'] = render_to_string('frr/policy.frr.j2', policy)
+def generate(config_dict):
+    if config_dict and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().generate(config_dict)
     return None
 
-
-def apply(policy):
-    bgp_daemon = 'bgpd'
-    zebra_daemon = 'zebra'
-
-    # Save original configuration prior to starting any commit actions
-    frr_cfg = frr.FRRConfig()
-
-    # The route-map used for the FIB (zebra) is part of the zebra daemon
-    frr_cfg.load_configuration(bgp_daemon)
-    frr_cfg.modify_section(r'^bgp as-path access-list .*')
-    frr_cfg.modify_section(r'^bgp community-list .*')
-    frr_cfg.modify_section(r'^bgp extcommunity-list .*')
-    frr_cfg.modify_section(r'^bgp large-community-list .*')
-    frr_cfg.modify_section(r'^route-map .*', stop_pattern='^exit',
-                           remove_stop_mark=True)
-    if 'new_frr_config' in policy:
-        frr_cfg.add_before(frr.default_add_before, policy['new_frr_config'])
-    frr_cfg.commit_configuration(bgp_daemon)
-
-    # The route-map used for the FIB (zebra) is part of the zebra daemon
-    frr_cfg.load_configuration(zebra_daemon)
-    frr_cfg.modify_section(r'^access-list .*')
-    frr_cfg.modify_section(r'^ipv6 access-list .*')
-    frr_cfg.modify_section(r'^ip prefix-list .*')
-    frr_cfg.modify_section(r'^ipv6 prefix-list .*')
-    frr_cfg.modify_section(r'^route-map .*', stop_pattern='^exit',
-                           remove_stop_mark=True)
-    if 'new_frr_config' in policy:
-        frr_cfg.add_before(frr.default_add_before, policy['new_frr_config'])
-    frr_cfg.commit_configuration(zebra_daemon)
-
+def apply(config_dict):
+    if config_dict and not is_systemd_service_running('vyos-configd.service'):
+        FRRender().apply()
     return None
-
 
 if __name__ == '__main__':
     try:

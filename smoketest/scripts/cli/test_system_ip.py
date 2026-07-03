@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -18,72 +18,83 @@ import unittest
 from base_vyostest_shim import VyOSUnitTestSHIM
 
 from vyos.configsession import ConfigSessionError
-from vyos.utils.file import read_file
+from vyos.utils.system import sysctl_read
+from vyos.xml_ref import default_value
 
 base_path = ['system', 'ip']
 
 class TestSystemIP(VyOSUnitTestSHIM.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super(TestSystemIP, cls).setUpClass()
+        # ensure we can also run this test on a live system - so lets clean
+        # out the current configuration :)
+        cls.cli_delete(cls, base_path)
+
     def tearDown(self):
         self.cli_delete(base_path)
         self.cli_commit()
+        # always forward to base class
+        super().tearDown()
 
     def test_system_ip_forwarding(self):
         # Test if IPv4 forwarding can be disabled globally, default is '1'
         # which means forwarding enabled
-        all_forwarding = '/proc/sys/net/ipv4/conf/all/forwarding'
-        self.assertEqual(read_file(all_forwarding), '1')
+        self.assertEqual(sysctl_read(['net', 'ipv4', 'conf', 'all', 'forwarding']), '1')
 
         self.cli_set(base_path + ['disable-forwarding'])
         self.cli_commit()
 
-        self.assertEqual(read_file(all_forwarding), '0')
+        self.assertEqual(sysctl_read(['net', 'ipv4', 'conf', 'all', 'forwarding']), '0')
+        frrconfig = self.getFRRconfig()
+        self.assertIn('no ip forwarding', frrconfig)
+
+        self.cli_delete(base_path + ['disable-forwarding'])
+        self.cli_commit()
+
+        self.assertEqual(sysctl_read(['net', 'ipv4', 'conf', 'all', 'forwarding']), '1')
+        frrconfig = self.getFRRconfig()
+        self.assertNotIn('no ip forwarding', frrconfig)
 
     def test_system_ip_multipath(self):
         # Test IPv4 multipathing options, options default to off -> '0'
-        use_neigh = '/proc/sys/net/ipv4/fib_multipath_use_neigh'
-        hash_policy = '/proc/sys/net/ipv4/fib_multipath_hash_policy'
-
-        self.assertEqual(read_file(use_neigh), '0')
-        self.assertEqual(read_file(hash_policy), '0')
+        self.assertEqual(sysctl_read(['net', 'ipv4', 'fib_multipath_use_neigh']), '0')
+        self.assertEqual(sysctl_read(['net', 'ipv4', 'fib_multipath_hash_policy']), '0')
 
         self.cli_set(base_path + ['multipath', 'ignore-unreachable-nexthops'])
         self.cli_set(base_path + ['multipath', 'layer4-hashing'])
         self.cli_commit()
 
-        self.assertEqual(read_file(use_neigh), '1')
-        self.assertEqual(read_file(hash_policy), '1')
+        self.assertEqual(sysctl_read(['net', 'ipv4', 'fib_multipath_use_neigh']), '1')
+        self.assertEqual(sysctl_read(['net', 'ipv4', 'fib_multipath_hash_policy']), '1')
 
     def test_system_ip_arp_table_size(self):
-        # Maximum number of entries to keep in the ARP cache, the
-        # default is 8k
+        cli_default = int(default_value(base_path + ['arp', 'table-size']))
+        def _verify_gc_thres(table_size):
+            self.assertEqual(sysctl_read(['net', 'ipv4', 'neigh', 'default', 'gc_thresh3']), str(table_size))
+            self.assertEqual(sysctl_read(['net', 'ipv4', 'neigh', 'default', 'gc_thresh2']), str(table_size // 2))
+            self.assertEqual(sysctl_read(['net', 'ipv4', 'neigh', 'default', 'gc_thresh1']), str(table_size // 8))
 
-        gc_thresh3 = '/proc/sys/net/ipv4/neigh/default/gc_thresh3'
-        gc_thresh2 = '/proc/sys/net/ipv4/neigh/default/gc_thresh2'
-        gc_thresh1 = '/proc/sys/net/ipv4/neigh/default/gc_thresh1'
-        self.assertEqual(read_file(gc_thresh3), '8192')
-        self.assertEqual(read_file(gc_thresh2), '4096')
-        self.assertEqual(read_file(gc_thresh1), '1024')
+        _verify_gc_thres(cli_default)
 
         for size in [1024, 2048, 4096, 8192, 16384, 32768]:
             self.cli_set(base_path + ['arp', 'table-size', str(size)])
             self.cli_commit()
-
-            self.assertEqual(read_file(gc_thresh3), str(size))
-            self.assertEqual(read_file(gc_thresh2), str(size // 2))
-            self.assertEqual(read_file(gc_thresh1), str(size // 8))
+            _verify_gc_thres(size)
 
     def test_system_ip_protocol_route_map(self):
-        protocols = ['any', 'babel', 'bgp', 'connected', 'eigrp', 'isis',
-                     'kernel', 'ospf', 'rip', 'static', 'table']
+        protocols = ['any', 'babel', 'bgp', 'eigrp', 'isis', 'ospf', 'rip', 'static']
+
+        rule_num = '10'
 
         for protocol in protocols:
-            self.cli_set(['policy', 'route-map', f'route-map-{protocol}', 'rule', '10', 'action', 'permit'])
+            self.cli_set(['policy', 'route-map', f'route-map-{protocol}', 'rule', rule_num, 'action', 'permit'])
             self.cli_set(base_path + ['protocol', protocol, 'route-map', f'route-map-{protocol}'])
 
         self.cli_commit()
 
         # Verify route-map properly applied to FRR
-        frrconfig = self.getFRRconfig('ip protocol', end='', daemon='zebra')
+        frrconfig = self.getFRRconfig('ip protocol', end_marker='', stop_section='^end')
         for protocol in protocols:
             self.assertIn(f'ip protocol {protocol} route-map route-map-{protocol}', frrconfig)
 
@@ -94,7 +105,7 @@ class TestSystemIP(VyOSUnitTestSHIM.TestCase):
         self.cli_commit()
 
         # Verify route-map properly applied to FRR
-        frrconfig = self.getFRRconfig('ip protocol', end='', daemon='zebra')
+        frrconfig = self.getFRRconfig('ip protocol', stop_section='^end')
         self.assertNotIn(f'ip protocol', frrconfig)
 
     def test_system_ip_protocol_non_existing_route_map(self):
@@ -113,14 +124,35 @@ class TestSystemIP(VyOSUnitTestSHIM.TestCase):
         self.cli_set(base_path + ['nht', 'no-resolve-via-default'])
         self.cli_commit()
         # Verify CLI config applied to FRR
-        frrconfig = self.getFRRconfig('', end='', daemon='zebra')
+        frrconfig = self.getFRRconfig()
         self.assertIn(f'no ip nht resolve-via-default', frrconfig)
 
         self.cli_delete(base_path + ['nht', 'no-resolve-via-default'])
         self.cli_commit()
         # Verify CLI config removed to FRR
-        frrconfig = self.getFRRconfig('', end='', daemon='zebra')
+        frrconfig = self.getFRRconfig()
         self.assertNotIn(f'no ip nht resolve-via-default', frrconfig)
 
+    def test_system_ip_import_table(self):
+        table_num = '100'
+        distance = '200'
+        route_map_in = 'foo-map-in'
+        self.cli_set(['policy', 'route-map', route_map_in, 'rule', '10', 'action', 'permit'])
+        self.cli_set(base_path + ['import-table', table_num, 'distance', distance])
+        self.cli_set(base_path + ['import-table', table_num, 'route-map', route_map_in])
+
+        self.cli_commit()
+        # Verify CLI config applied to FRR
+        frrconfig = self.getFRRconfig()
+        self.assertIn(f'ip import-table {table_num} distance {distance} route-map {route_map_in}', frrconfig)
+
+        self.cli_delete(['policy', 'route-map', route_map_in])
+
+        self.cli_delete(base_path + ['import-table'])
+        self.cli_commit()
+        # Verify CLI config removed to FRR
+        frrconfig = self.getFRRconfig()
+        self.assertNotIn(f'ip import-table {table_num} distance {distance}', frrconfig)
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

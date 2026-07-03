@@ -1,8 +1,11 @@
 #!/usr/bin/make -f
 
 DIR := debian/tmp
+DIR_AWS := $(DIR)/vyos-1x-aws
+DIR_LIBVYOSCONFIG := $(DIR)/libvyosconfig
 VYOS_SBIN_DIR := usr/sbin
 VYOS_BIN_DIR := usr/bin
+VYOS_LIB_DIR := usr/lib
 VYOS_LIBEXEC_DIR := usr/libexec/vyos
 VYOS_DATA_DIR := usr/share/vyos
 VYOS_CFG_TMPL_DIR := opt/vyatta/share/vyatta-cfg/templates
@@ -10,12 +13,29 @@ VYOS_OP_TMPL_DIR := opt/vyatta/share/vyatta-op/templates
 VYOS_MIBS_DIR := usr/share/snmp/mibs
 VYOS_LOCALUI_DIR := srv/localui
 
+VYCONF := usr/libexec/vyos/vyconf
+VYCONF_BIN := $(VYCONF)/bin
+VYCONF_CONF := $(VYCONF)/config
+VYCONF_SESSION := $(VYCONF)/session
+VYCONF_DATA := usr/share/vyos/vyconf
+VYCONF_DEF := etc/vyos
+VYCONF_REFTREE_DIR := $(VYOS_LIBEXEC_DIR)/vyconf/reftree
+
+OCAML_DIR := /opt/opam/${OCAML_VERSION}
+VYOS_OCAML_TOOLS := src/ocaml/_build/install/default/bin
+
 MIGRATION_SCRIPTS_DIR := opt/vyatta/etc/config-migrate/migrate
 ACTIVATION_SCRIPTS_DIR := usr/libexec/vyos/activate
 SYSTEM_SCRIPTS_DIR := usr/libexec/vyos/system
 SERVICES_DIR := usr/libexec/vyos/services
 
 DEB_TARGET_ARCH := $(shell dpkg-architecture -qDEB_TARGET_ARCH)
+
+# Base version prefix from debian/changelog
+BASE_VERSION := 999.0
+COMMIT_ID := $(shell echo -n g && git rev-parse --short HEAD)
+COMMIT_COUNT := $(shell git rev-list HEAD --count)
+DIRTY_FLAG := $(shell ! git diff --quiet || ! git diff --cached --quiet && echo -dirty || echo)
 
 %:
 	dh $@ --with python3, --with quilt
@@ -25,7 +45,7 @@ DEB_TARGET_ARCH := $(shell dpkg-architecture -qDEB_TARGET_ARCH)
 override_dh_strip_nondeterminism:
 
 override_dh_gencontrol:
-	dh_gencontrol -- -v$(shell (git describe --tags --long --match 'vyos/*' --match '1.4.*' --dirty 2>/dev/null || echo 0.0-no.git.tag) | sed -E 's%vyos/%%' | sed -E 's%-dirty%+dirty%')
+	dh_gencontrol -- -v$(BASE_VERSION)-$(COMMIT_COUNT)-$(COMMIT_ID)$(DIRTY_FLAG)
 
 override_dh_auto_build:
 	make all
@@ -34,6 +54,9 @@ override_dh_auto_install:
 	dh_auto_install
 
 	cd python; python3 setup.py install --install-layout=deb --root ../$(DIR); cd ..
+
+	# Remove all __pycache__ directories before installing
+	find . -type d -name '__pycache__' -exec rm -rf {} +
 
 	# Install scripts
 	mkdir -p $(DIR)/$(VYOS_SBIN_DIR)
@@ -89,8 +112,12 @@ override_dh_auto_install:
 	cp -r templates-op/* $(DIR)/$(VYOS_OP_TMPL_DIR)
 
 	# Install data files
+	mkdir -p $(DIR)/$(VYCONF_REFTREE_DIR)
+	cp -r data/reftree.cache $(DIR)/$(VYCONF_REFTREE_DIR)
 	mkdir -p $(DIR)/$(VYOS_DATA_DIR)
 	cp -r data/* $(DIR)/$(VYOS_DATA_DIR)
+	# Remove j2lint comments / linter configuration which would insert additional new-lines
+	find $(DIR)/$(VYOS_DATA_DIR) -name "*.j2" -type f | xargs sed -i -e '/^{#.*#}/d'
 
 	# Create localui dir
 	mkdir -p $(DIR)/$(VYOS_LOCALUI_DIR)
@@ -123,20 +150,54 @@ override_dh_auto_install:
 	cp -r smoketest/scripts/* $(DIR)/$(VYOS_LIBEXEC_DIR)/tests/smoke
 
 	# Install smoke test configs
-	mkdir -p $(DIR)/$(VYOS_LIBEXEC_DIR)/tests/config/
-	cp -r smoketest/configs/* $(DIR)/$(VYOS_LIBEXEC_DIR)/tests/config
-
-	# Install smoke test config tests
-	mkdir -p $(DIR)/$(VYOS_LIBEXEC_DIR)/tests/config-tests/
-	cp -r smoketest/config-tests/* $(DIR)/$(VYOS_LIBEXEC_DIR)/tests/config-tests
+	mkdir -p $(DIR)/$(VYOS_LIBEXEC_DIR)/tests/configs/
+	cp -r smoketest/configs/* $(DIR)/$(VYOS_LIBEXEC_DIR)/tests/configs
 
 	# Install system programs
 	mkdir -p $(DIR)/$(VYOS_BIN_DIR)
 	cp -r smoketest/bin/* $(DIR)/$(VYOS_BIN_DIR)
 
-	# Install udev script
+	# Install udev scripts
 	mkdir -p $(DIR)/usr/lib/udev
-	cp src/helpers/vyos_net_name $(DIR)/usr/lib/udev
+	cp -r src/udev/* $(DIR)/usr/lib/udev
+
+	# vyos-1x-aws package
+	# Move some files to dedicated DEB packages
+	#
+	mkdir -p $(DIR_AWS)/lib/systemd/system
+	mv $(DIR)/lib/systemd/system/aws-gwlbtun.service $(DIR_AWS)/lib/systemd/system
+
+	mkdir -p $(DIR_AWS)/opt/vyatta/share/vyatta-cfg/templates/service
+	mv $(DIR)/opt/vyatta/share/vyatta-cfg/templates/service/aws $(DIR_AWS)/opt/vyatta/share/vyatta-cfg/templates/service
+
+	mkdir -p $(DIR_AWS)/usr/libexec/vyos/conf_mode
+	mv $(DIR)/usr/libexec/vyos/conf_mode/service_aws_glb.py $(DIR_AWS)/usr/libexec/vyos/conf_mode
+
+	mkdir -p $(DIR_AWS)/usr/share/vyos/templates
+	mv $(DIR)/usr/share/vyos/templates/aws/ $(DIR_AWS)/usr/share/vyos/templates
+
+	# libvyosconfig package
+	mkdir -p $(DIR_LIBVYOSCONFIG)/$(VYOS_LIB_DIR)
+	mkdir -p $(DIR_LIBVYOSCONFIG)/$(VYCONF_CONF)
+	mkdir -p $(DIR_LIBVYOSCONFIG)/$(VYCONF_SESSION)
+	mkdir -p $(DIR_LIBVYOSCONFIG)/$(VYCONF_DATA)
+	mkdir -p $(DIR_LIBVYOSCONFIG)/$(VYCONF_DEF)
+	mkdir -p $(DIR_LIBVYOSCONFIG)/$(VYCONF_BIN)
+
+	cp $(OCAML_DIR)/share/vyconf/vyconf.proto $(DIR_LIBVYOSCONFIG)/$(VYCONF_DATA)
+	cp $(OCAML_DIR)/share/vyconf/vyconfd.conf $(DIR_LIBVYOSCONFIG)/$(VYCONF_DEF)
+	cp $(OCAML_DIR)/bin/vyconfd $(DIR_LIBVYOSCONFIG)/$(VYCONF)
+	cp $(OCAML_DIR)/bin/vyconf_cli $(DIR_LIBVYOSCONFIG)/$(VYCONF)
+	cp $(OCAML_DIR)/bin/vyconf_cli_compat $(DIR_LIBVYOSCONFIG)/$(VYCONF_BIN)
+	cp libvyosconfig/_build/libvyosconfig.so $(DIR_LIBVYOSCONFIG)/$(VYOS_LIB_DIR)/libvyosconfig.so.0
+
+	# OCaml binaries from former vyos-utils package
+	cp $(VYOS_OCAML_TOOLS)/numeric $(DIR)/$(VYOS_LIBEXEC_DIR)/validators
+	cp $(VYOS_OCAML_TOOLS)/validate-value $(DIR)/$(VYOS_LIBEXEC_DIR)
+	cp $(VYOS_OCAML_TOOLS)/file-path $(DIR)/$(VYOS_LIBEXEC_DIR)/validators
+	cp $(VYOS_OCAML_TOOLS)/url $(DIR)/$(VYOS_LIBEXEC_DIR)/validators
+	cp $(VYOS_OCAML_TOOLS)/list_interfaces $(DIR)/$(VYOS_LIBEXEC_DIR)/completion
+	cp $(VYOS_OCAML_TOOLS)/vyos-op-run $(DIR)/$(VYOS_BIN_DIR)
 
 override_dh_installsystemd:
 	dh_installsystemd -pvyos-1x --name vyos-router vyos-router.service

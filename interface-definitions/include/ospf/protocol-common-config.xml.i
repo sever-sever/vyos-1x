@@ -314,13 +314,13 @@
           <description>OSPF area in dotted decimal notation</description>
         </valueHelp>
         <constraint>
-          <validator name="numeric" argument="--range 0-4294967295"/>
           <validator name="ip-address"/>
         </constraint>
       </properties>
       <children>
         #include <include/ospf/authentication.xml.i>
         #include <include/ospf/intervals.xml.i>
+        #include <include/ospf/retransmit-window.xml.i>
       </children>
     </tagNode>
   </children>
@@ -433,6 +433,7 @@
     </leafNode>
     #include <include/ospf/authentication.xml.i>
     #include <include/ospf/intervals.xml.i>
+    #include <include/ospf/retransmit-window.xml.i>
     #include <include/ospf/interface-common.xml.i>
     #include <include/isis/ldp-sync-interface.xml.i>
     <leafNode name="bandwidth">
@@ -678,7 +679,7 @@
   <children>
     <node name="global-block">
       <properties>
-        <help>Segment Routing Global Block label range</help>
+        <help>Segment-Routing Global Block label range</help>
       </properties>
       <children>
         #include <include/segment-routing-label-value.xml.i>
@@ -686,7 +687,7 @@
     </node>
     <node name="local-block">
       <properties>
-        <help>Segment Routing Local Block label range</help>
+        <help>Segment-Routing Local Block label range</help>
       </properties>
       <children>
         #include <include/segment-routing-label-value.xml.i>
@@ -789,6 +790,16 @@
     <node name="kernel">
       <properties>
         <help>Redistribute Kernel routes</help>
+      </properties>
+      <children>
+        #include <include/ospf/metric.xml.i>
+        #include <include/ospf/metric-type.xml.i>
+        #include <include/route-map.xml.i>
+      </children>
+    </node>
+    <node name="nhrp">
+      <properties>
+        <help>Redistribute NHRP routes</help>
       </properties>
       <children>
         #include <include/ospf/metric.xml.i>

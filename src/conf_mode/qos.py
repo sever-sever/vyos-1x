@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -15,7 +15,8 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 from sys import exit
-from netifaces import interfaces
+
+from netifaces import interfaces # pylint: disable = no-name-in-module
 
 from vyos.base import Warning
 from vyos.config import Config
@@ -85,7 +86,13 @@ def _clean_conf_dict(conf):
         }
     """
     if isinstance(conf, dict):
-        return {node: _clean_conf_dict(val) for node, val in conf.items() if val != {} and _clean_conf_dict(val) != {}}
+        preserve_empty_nodes = {'syn', 'ack'}
+
+        return {
+            node: _clean_conf_dict(val)
+            for node, val in conf.items()
+            if (val != {} and _clean_conf_dict(val) != {}) or node in preserve_empty_nodes
+        }
     else:
         return conf
 
@@ -198,9 +205,15 @@ def get_config(config=None):
 def _verify_match(cls_config: dict) -> None:
     if 'match' in cls_config:
         for match, match_config in cls_config['match'].items():
-            if {'ip', 'ipv6'} <= set(match_config):
+            filters = set(match_config)
+            if {'ip', 'ipv6'} <= filters:
                 raise ConfigError(
-                    f'Can not use both IPv6 and IPv4 in one match ({match})!')
+                    f'Cannot use both IPv6 and IPv4 in one match ({match})!')
+
+            if {'interface', 'vif'} & filters:
+                if {'ip', 'ipv6', 'ether'} & filters:
+                    raise ConfigError(
+                        f'Cannot combine protocol and interface or vlan tag match ({match})!')
 
 
 def _verify_match_group_exist(cls_config, qos):
@@ -208,6 +221,46 @@ def _verify_match_group_exist(cls_config, qos):
         for group in cls_config['match_group']:
             if 'traffic_match_group' not in qos or group not in qos['traffic_match_group']:
                 Warning(f'Match group "{group}" does not exist!')
+
+
+def _verify_default_policy_exist(policy, policy_config):
+    if 'default' not in policy_config:
+        raise ConfigError(f'Policy {policy} misses "default" class!')
+
+
+def _check_shaper_hfsc_rate(cls, cls_conf):
+    is_m2_exist = False
+    for crit in TrafficShaperHFSC.criteria:
+        if cls_conf.get(crit, {}).get('m2') is not None:
+            is_m2_exist = True
+
+        if cls_conf.get(crit, {}).get('m1') is not None:
+            for crit_val in ['m2', 'd']:
+                if cls_conf.get(crit, {}).get(crit_val) is None:
+                    raise ConfigError(
+                        f'{cls} {crit} m1 value is set, but no {crit_val} was found!'
+                    )
+
+    if not is_m2_exist:
+        raise ConfigError(f'At least one m2 value needs to be set for class: {cls}')
+
+    if (
+        cls_conf.get('upperlimit', {}).get('m2') is not None
+        and cls_conf.get('linkshare', {}).get('m2') is None
+    ):
+        raise ConfigError(
+            f'Linkshare m2 needs to be defined to use upperlimit m2 for class: {cls}'
+        )
+
+
+def _verify_shaper_hfsc(policy, policy_config):
+    _verify_default_policy_exist(policy, policy_config)
+
+    _check_shaper_hfsc_rate('default', policy_config.get('default'))
+
+    if 'class' in policy_config:
+        for cls, cls_conf in policy_config['class'].items():
+            _check_shaper_hfsc_rate(cls, cls_conf)
 
 
 def verify(qos):
@@ -253,8 +306,13 @@ def verify(qos):
                                 if queue_lim < max_tr:
                                     raise ConfigError(f'Policy "{policy}" uses queue-limit "{queue_lim}" < max-threshold "{max_tr}"!')
                 if policy_type in ['priority_queue']:
-                    if 'default' not in policy_config:
-                        raise ConfigError(f'Policy {policy} misses "default" class!')
+                    _verify_default_policy_exist(policy, policy_config)
+                if policy_type in ['rate_control']:
+                    if 'bandwidth' not in policy_config:
+                        raise ConfigError('Bandwidth not defined')
+                if policy_type in ['shaper_hfsc']:
+                    _verify_shaper_hfsc(policy, policy_config)
+
                 if 'default' in policy_config:
                     if 'bandwidth' not in policy_config['default'] and policy_type not in ['priority_queue', 'round_robin', 'shaper_hfsc']:
                         raise ConfigError('Bandwidth not defined for default traffic!')
@@ -290,6 +348,33 @@ def generate(qos):
 
     return None
 
+
+def apply_interface(qos, ifname):
+    """ Clear and re-apply QoS for a single interface only. """
+    run(f'tc qdisc del dev {ifname} parent ffff:')
+    run(f'tc qdisc del dev {ifname} root')
+
+    if not qos or 'interface' not in qos or ifname not in qos['interface']:
+        return None
+
+    interface_config = qos['interface'][ifname]
+    if not verify_interface_exists(qos, ifname, state_required=True, warning_only=True):
+        # When shaper is bound to a dialup (e.g. PPPoE) interface it is
+        # possible that it is yet not available when the QoS code runs.
+        # Skip the configuration and inform the user via warning_only=True
+        return None
+
+    for direction in ['egress', 'ingress']:
+        # bail out early if shaper for given direction is not used at all
+        if direction not in interface_config:
+            continue
+
+        shaper_type, shaper_config = get_shaper(qos, interface_config, direction)
+        shaper_type(ifname).update(shaper_config, direction)
+
+    return None
+
+
 def apply(qos):
     # Always delete "old" shapers first
     for interface in interfaces():
@@ -302,21 +387,8 @@ def apply(qos):
     if not qos or 'interface' not in qos:
         return None
 
-    for interface, interface_config in qos['interface'].items():
-        if not verify_interface_exists(interface, warning_only=True):
-            # When shaper is bound to a dialup (e.g. PPPoE) interface it is
-            # possible that it is yet not availbale when to QoS code runs.
-            # Skip the configuration and inform the user via warning_only=True
-            continue
-
-        for direction in ['egress', 'ingress']:
-            # bail out early if shaper for given direction is not used at all
-            if direction not in interface_config:
-                continue
-
-            shaper_type, shaper_config = get_shaper(qos, interface_config, direction)
-            tmp = shaper_type(interface)
-            tmp.update(shaper_config, direction)
+    for ifname in qos['interface']:
+        apply_interface(qos, ifname)
 
     return None
 

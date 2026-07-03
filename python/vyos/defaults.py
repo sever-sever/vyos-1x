@@ -1,4 +1,4 @@
-# Copyright 2018-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -15,10 +15,10 @@
 
 import os
 
-base_dir = '/usr/libexec/vyos/'
+base_dir = '/usr/libexec/vyos'
 
 directories = {
-  'base' : base_dir,
+  'base' : f'{base_dir}',
   'data' : '/usr/share/vyos/',
   'conf_mode' : f'{base_dir}/conf_mode',
   'op_mode' : f'{base_dir}/op_mode',
@@ -35,11 +35,36 @@ directories = {
   'vyos_udev_dir' : '/run/udev/vyos',
   'isc_dhclient_dir' : '/run/dhclient',
   'dhcp6_client_dir' : '/run/dhcp6c',
-  'vyos_configdir' : '/opt/vyatta/config'
+  'vyos_configdir' : '/opt/vyatta/config',
+  'completion_dir' : f'{base_dir}/completion',
+  'ca_certificates' : '/usr/local/share/ca-certificates/vyos',
+  'podman_storage' : '/usr/lib/live/mount/persistence/container/storage',
+  'ppp_nexthop_dir' : '/run/ppp_nexthop',
+  'proto_path' : '/usr/share/vyos/vyconf',
+  'vyconf_session_dir' : f'{base_dir}/vyconf/session'
+}
+
+systemd_services = {
+    'haproxy' : 'haproxy.service',
+    'openconnect': 'ocserv.service',
+    'syslog' : 'syslog.service',
+    'snmpd' : 'snmpd.service',
+}
+
+internal_ports = {
+    'certbot_haproxy' : 65080, # Certbot running behind haproxy
+}
+
+config_files = {
+    'sshd_user_ca' : '/run/sshd/trusted_user_ca',
+    'igmp_proxy' : '/run/igmpproxy/igmpproxy.conf',
 }
 
 config_status = '/tmp/vyos-config-status'
 api_config_state = '/run/http-api-state'
+frr_debug_enable = '/tmp/vyos.frr.debug'
+static_route_dhcp_interfaces_path = '/tmp/static_dhcp_interfaces'
+vyos_configd_socket_path = 'ipc:///run/vyos-configd.sock'
 
 cfg_group = 'vyattacfg'
 
@@ -53,10 +78,40 @@ config_default = os.path.join(directories['data'], 'config.boot.default')
 
 rt_symbolic_names = {
   # Standard routing tables for Linux & reserved IDs for VyOS
-  'default': 253, # Confusingly, a final fallthru, not the default. 
-  'main': 254,    # The actual global table used by iproute2 unless told otherwise. 
+  'default': 253, # Confusingly, a final fallthru, not the default.
+  'main': 254,    # The actual global table used by iproute2 unless told otherwise.
   'local': 255,   # Special kernel loopback table.
 }
 
 rt_global_vrf = rt_symbolic_names['main']
 rt_global_table = rt_symbolic_names['main']
+
+vyconfd_conf = '/etc/vyos/vyconfd.conf'
+
+DEFAULT_COMMIT_CONFIRM_MINUTES = 10
+
+commit_hooks = {'pre': '/etc/commit/pre-hooks.d',
+                'post': '/etc/commit/post-hooks.d'
+               }
+
+airbag_noteworthy_size = 20
+
+SSH_DSA_DEPRECATION_WARNING: str = \
+'Support for SSH-DSA keys is deprecated and will be removed in VyOS 1.6. ' \
+'Please update affected keys to a supported algorithm (e.g., RSA, ECDSA or ' \
+'ED25519) to avoid authentication failures after the upgrade.'
+
+reference_tree_cache = '/usr/share/vyos/reftree.cache'
+
+activation_list = os.path.join(directories['config'], 'activation-list')
+activation_init = os.path.join(directories['data'], 'activation-init')
+activation_hint = os.path.join(directories['data'], '.activation_hint')
+
+config_sync_exclusion_list = os.path.join(
+    directories['data'], 'config-sync-exclude.json'
+)
+
+# IP rule priority for WireGuard fwmark-based VRF routing rules.
+# Sits between the l3mdev rule (1000) and the l3mdev unreachable rule (2000),
+# ensuring fwmark-tagged tunnel packets are routed into the correct VRF table.
+wireguard_fwmark_pref = '1998'

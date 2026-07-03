@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -28,7 +28,7 @@ from vyos.utils.process import popen
 
 parser = argparse.ArgumentParser(description='Retrieve SNMP interfaces information')
 parser.add_argument('--ifindex', action='store', nargs='?', const='all', help='Show interface index')
-parser.add_argument('--ifalias', action='store', nargs='?', const='all', help='Show interface aliase')
+parser.add_argument('--ifalias', action='store', nargs='?', const='all', help='Show interface alias')
 parser.add_argument('--ifdescr', action='store', nargs='?', const='all', help='Show interface description')
 
 def show_ifindex(intf):

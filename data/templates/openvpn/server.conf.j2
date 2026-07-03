@@ -11,11 +11,11 @@ dev-type {{ device_type }}
 dev {{ ifname }}
 persist-key
 {% if protocol is vyos_defined('tcp-active') %}
-proto tcp-client
+proto tcp{{ protocol_modifier }}-client
 {% elif protocol is vyos_defined('tcp-passive') %}
-proto tcp-server
+proto tcp{{ protocol_modifier }}-server
 {% else %}
-proto udp
+proto udp{{ protocol_modifier }}
 {% endif %}
 {% if local_host is vyos_defined %}
 local {{ local_host }}
@@ -63,6 +63,9 @@ nobind
 #
 # OpenVPN Server mode
 #
+{%     if ip_version is vyos_defined('ipv6') %}
+bind ipv6only
+{%     endif %}
 mode server
 tls-server
 {%     if server is vyos_defined %}
@@ -99,7 +102,7 @@ ifconfig-pool {{ server.client_ip_pool.start }} {{ server.client_ip_pool.stop }}
 {%         if server.max_connections is vyos_defined %}
 max-clients {{ server.max_connections }}
 {%         endif %}
-{%         if server.client is vyos_defined %}
+{%         if server.client is vyos_defined or server.reject_unconfigured_clients is vyos_defined %}
 client-config-dir /run/openvpn/ccd/{{ ifname }}
 {%         endif %}
 {%     endif %}
@@ -131,6 +134,9 @@ plugin "{{ plugin_dir }}/openvpn-otp.so" "otp_secrets=/config/auth/openvpn/{{ if
 #
 # OpenVPN site-2-site mode
 #
+{%     if ip_version is vyos_defined('ipv6') %}
+bind ipv6only
+{%     endif %}
 ping {{ keep_alive.interval }}
 ping-restart {{ keep_alive.failure_count }}
 
@@ -210,6 +216,9 @@ cipher {{ encryption.cipher | openvpn_cipher }}
 {%     endif %}
 {%     if encryption.data_ciphers is vyos_defined %}
 data-ciphers {{ encryption.data_ciphers | openvpn_data_ciphers }}
+{%     endif %}
+{%     if encryption.data_ciphers_fallback is vyos_defined %}
+data-ciphers-fallback {{ encryption.data_ciphers_fallback | openvpn_data_ciphers_fallback }}
 {%     endif %}
 {% endif %}
 providers default

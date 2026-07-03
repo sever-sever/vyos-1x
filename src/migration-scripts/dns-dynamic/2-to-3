@@ -1,4 +1,4 @@
-# Copyright 2023-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -33,7 +33,7 @@ def normalize_name(name):
     the old name format.
     """
     # Normalize unicode characters to ASCII (NFKD)
-    # Replace all separators with hypens, strip leading and trailing hyphens
+    # Replace all separators with hyphens, strip leading and trailing hyphens
     name = normalize('NFKD', name).encode('ascii', 'ignore').decode()
     name = re.sub(r'(\s|_|\W)+', '-', name).strip('-')
 

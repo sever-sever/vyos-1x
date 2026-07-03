@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2018-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -21,6 +21,7 @@ from sys import exit
 from vyos.base import Warning
 from vyos.config import Config
 from vyos.configverify import verify_interface_exists
+from vyos.defaults import config_files
 from vyos.template import render
 from vyos.utils.process import call
 from vyos.utils.dict import dict_search
@@ -28,7 +29,7 @@ from vyos import ConfigError
 from vyos import airbag
 airbag.enable()
 
-config_file = r'/etc/igmpproxy.conf'
+config_file = config_files['igmp_proxy']
 
 def get_config(config=None):
     if config:
@@ -55,7 +56,7 @@ def verify(igmp_proxy):
         return None
 
     if 'igmp_configured' in igmp_proxy or 'pim_configured' in igmp_proxy:
-        raise ConfigError('Can not configure both IGMP proxy and PIM '\
+        raise ConfigError('Cannot configure both IGMP proxy and PIM '\
                           'at the same time')
 
     # at least two interfaces are required, one upstream and one downstream
@@ -65,7 +66,7 @@ def verify(igmp_proxy):
 
     upstream = 0
     for interface, config in igmp_proxy['interface'].items():
-        verify_interface_exists(interface)
+        verify_interface_exists(igmp_proxy, interface)
         if dict_search('role', config) == 'upstream':
             upstream += 1
 
@@ -87,18 +88,18 @@ def generate(igmp_proxy):
         return None
 
     render(config_file, 'igmp-proxy/igmpproxy.conf.j2', igmp_proxy)
-
     return None
 
 def apply(igmp_proxy):
+    service_name = 'igmpproxy.service'
     if not igmp_proxy or 'disable' in igmp_proxy:
-         # IGMP Proxy support is removed in the commit
-         call('systemctl stop igmpproxy.service')
-         if os.path.exists(config_file):
-             os.unlink(config_file)
-    else:
-        call('systemctl restart igmpproxy.service')
+        # IGMP Proxy support is removed in the commit
+        call(f'systemctl stop {service_name}')
+        if os.path.exists(config_file):
+            os.unlink(config_file)
+        return None
 
+    call(f'systemctl restart {service_name}')
     return None
 
 if __name__ == '__main__':

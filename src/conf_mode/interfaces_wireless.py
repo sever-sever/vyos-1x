@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -22,7 +22,10 @@ from netaddr import EUI, mac_unix_expanded
 from time import sleep
 
 from vyos.config import Config
+from vyos.configdep import set_dependents
+from vyos.configdep import call_dependents
 from vyos.configdict import get_interface_dict
+from vyos.configdict import is_vrf_changed
 from vyos.configdict import dict_merge
 from vyos.configverify import verify_address
 from vyos.configverify import verify_bridge_delete
@@ -34,10 +37,14 @@ from vyos.ifconfig import WiFiIf
 from vyos.template import render
 from vyos.utils.dict import dict_search
 from vyos.utils.kernel import check_kmod
+from vyos.utils.kernel import is_module_loaded
+from vyos.utils.file import read_file
+from vyos.utils.file import write_file
 from vyos.utils.process import call
 from vyos.utils.process import is_systemd_service_active
 from vyos.utils.process import is_systemd_service_running
 from vyos.utils.network import interface_exists
+from vyos.base import Warning
 from vyos import ConfigError
 from vyos import airbag
 airbag.enable()
@@ -47,6 +54,8 @@ wpa_suppl_conf = '/run/wpa_supplicant/{ifname}.conf'
 hostapd_conf = '/run/hostapd/{ifname}.conf'
 hostapd_accept_station_conf = '/run/hostapd/{ifname}_station_accept.conf'
 hostapd_deny_station_conf = '/run/hostapd/{ifname}_station_deny.conf'
+
+mt7915e_conf = f'/etc/modprobe.d/mt7915e.conf'
 
 country_code_path = ['system', 'wireless', 'country-code']
 
@@ -75,7 +84,7 @@ def find_other_stations(conf, base, ifname):
 
 def get_config(config=None):
     """
-    Retrive CLI config as dictionary. Dictionary can never be empty, as at least the
+    Retrieve CLI config as dictionary. Dictionary can never be empty, as at least the
     interface name will be added or a deleted flag
     """
     if config:
@@ -84,7 +93,7 @@ def get_config(config=None):
         conf = Config()
     base = ['interfaces', 'wireless']
 
-    _, wifi = get_interface_dict(conf, base)
+    ifname, wifi = get_interface_dict(conf, base)
 
     # retrieve global Wireless regulatory domain setting
     if conf.exists(country_code_path):
@@ -97,7 +106,7 @@ def get_config(config=None):
         if wifi.from_defaults(['security', 'wpa']): # if not set by user
             del wifi['security']['wpa']
 
-    # XXX: Jinja2 can not operate on a dictionary key when it starts of with a number
+    # XXX: Jinja2 cannot operate on a dictionary key when it starts of with a number
     if '40mhz_incapable' in (dict_search('capabilities.ht', wifi) or []):
         wifi['capabilities']['ht']['fourtymhz_incapable'] = wifi['capabilities']['ht']['40mhz_incapable']
         del wifi['capabilities']['ht']['40mhz_incapable']
@@ -132,6 +141,14 @@ def get_config(config=None):
     # used in hostapd.conf.j2
     wifi['hostapd_accept_station_conf'] = hostapd_accept_station_conf.format(**wifi)
     wifi['hostapd_deny_station_conf'] = hostapd_deny_station_conf.format(**wifi)
+
+    # Protocols static arp dependency
+    if 'static_arp' in wifi:
+        set_dependents('static_arp', conf)
+
+    # Check vrf membership, to ensure firewall is updated
+    if is_vrf_changed(conf, ifname):
+        set_dependents('firewall', conf)
 
     return wifi
 
@@ -191,7 +208,7 @@ def verify(wifi):
         elif 'wpa' in wifi['security']:
             wpa = wifi['security']['wpa']
             if not any(i in ['passphrase', 'radius'] for i in wpa):
-                raise ConfigError('Misssing WPA key or RADIUS server')
+                raise ConfigError('Missing WPA key or RADIUS server')
 
             if 'username' in wpa:
                 if 'passphrase' not in wpa:
@@ -226,7 +243,9 @@ def verify(wifi):
         phy = wifi['physical_device']
         if phy in wifi['station_interfaces']:
             if len(wifi['station_interfaces'][phy]) > 0:
-                raise ConfigError('Only one station per wireless physical interface possible!')
+                raise ConfigError(
+                    'Only one station per wireless physical interface possible!'
+                )
 
     verify_address(wifi)
     verify_vrf(wifi)
@@ -304,6 +323,9 @@ def apply(wifi):
 
     if 'deleted' in wifi:
         WiFiIf(**wifi).remove()
+
+        # run the dependents and return
+        call_dependents()
         return None
 
     while (is_systemd_service_running(f'hostapd@{interface}.service') or \
@@ -313,6 +335,54 @@ def apply(wifi):
     # Finally create the new interface
     w = WiFiIf(**wifi)
     w.update(wifi)
+
+    # Set up the mt7915e module according to new wifi configuration.
+    # For this card, the decision is made for the 5GHz/6GHz-capable phy:
+    # 5GHz uses VHT (802.11ac) op_modes and 6GHz uses HE (802.11ax)
+    # op_modes. The card does not support WiFi-7 (802.11be).
+    # There is a race condition in the order the two phys on that card
+    # are configured. Sometimes, the 5/6GHz phy is configured first and
+    # the 2.4GHz phy is configured last, which would overwrite the module
+    # parameter definition. Only the Wi-Fi configuration for the 5/6GHz phy
+    # must write the file!
+    #
+    # Only if the mt7915e module is loaded (card present)...
+    if is_module_loaded('mt7915e'):
+        # op_modes as configured in interfaces_wireless.xml.in
+        five_ghz_op_modes_vht = ['0', '1', '2', '3']
+        six_ghz_op_modes_he = ['131', '132', '133', '134', '135']
+        # Make sure to act only when VHT or HE modes are used
+        module_options = ''
+        if 'capabilities' in wifi:
+            mt7915e_options_string = 'options mt7915e'
+            if 'he' in wifi['capabilities']:
+                if 'channel_set_width' in wifi['capabilities']['he']:
+                    if wifi['capabilities']['he']['channel_set_width'] in six_ghz_op_modes_he:
+                        # 6GHz band required (802.11ax, WiFi-6e)
+                        module_options = f'{mt7915e_options_string} enable_6ghz=1'
+            if 'vht' in wifi['capabilities']:
+                if 'channel_set_width' in wifi['capabilities']['vht']:
+                    if wifi['capabilities']['vht']['channel_set_width'] in five_ghz_op_modes_vht:
+                        # 5GHz band required...
+                        module_options = f'{mt7915e_options_string} enable_6ghz=0'
+
+            tmp = None
+            if os.path.isfile(mt7915e_conf):
+                tmp = read_file(mt7915e_conf)
+
+            # Write the module config, so that there always is a valid module
+            # config which is mandatory to load the mt7916 firmware.
+            write_file(mt7915e_conf, module_options, mode=0o644)
+            # Issue warning if module options have changed. Warning is necessary
+            # even if this is the first time this module is configured,
+            # firmware must be reloaded.
+            if tmp != module_options:
+                Warning('Change to firmware 5GHz/6GHz configuration detected. '\
+                        'The system must be rebooted to correctly reload the ' \
+                        'mt7916 firmware. The card will not work otherwise!')
+                # Instead of reboot - can we unload and re-load the driver?
+    elif os.path.isfile(mt7915e_conf):
+        os.remove(mt7915e_conf)
 
     # Enable/Disable interface - interface is always placed in
     # administrative down state in WiFiIf class
@@ -330,6 +400,9 @@ def apply(wifi):
 
         elif wifi['type'] == 'station':
             call(f'systemctl start wpa_supplicant@{interface}.service')
+
+    # run the dependents
+    call_dependents()
 
     return None
 

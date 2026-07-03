@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -16,10 +16,11 @@
 
 import unittest
 
-from netifaces import interfaces
-
-from vyos.utils.process import process_named_running
 from base_interfaces_test import BasicInterfaceTest
+from base_vyostest_shim import VyOSUnitTestSHIM
+
+from vyos.configsession import ConfigSessionError
+from vyos.utils.network import interface_exists
 
 class VEthInterfaceTest(BasicInterfaceTest.TestCase):
     @classmethod
@@ -34,28 +35,20 @@ class VEthInterfaceTest(BasicInterfaceTest.TestCase):
         # call base-classes classmethod
         super(VEthInterfaceTest, cls).setUpClass()
 
-    def test_vif_8021q_mtu_limits(self):
-        self.skipTest('not supported')
+    def test_invalid_peers(self):
+        peer = ('veth1001', 'veth1002')
+        self.cli_set(self._base_path + [peer[0]])
+        self.cli_set(self._base_path + [peer[1], 'peer-name', peer[0]])
 
-    # As we always need a pair of veth interfaces, we can not rely on the base
-    # class check to determine if there is a dhcp6c or dhclient instance running.
-    # This test will always fail as there is an instance running on the peer
-    # interface.
-    def tearDown(self):
-        self.cli_delete(self._base_path)
+        # Configuration mismatch between "veth1001" and "veth1001"
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_set(self._base_path + [peer[0], 'peer-name', peer[1]])
         self.cli_commit()
 
-        # Verify that no previously interface remained on the system
-        for intf in self._interfaces:
-            self.assertNotIn(intf, interfaces())
-
-    @classmethod
-    def tearDownClass(cls):
-        # No daemon started during tests should remain running
-        for daemon in ['dhcp6c', 'dhclient']:
-            cls.assertFalse(cls, process_named_running(daemon))
-
-        super(VEthInterfaceTest, cls).tearDownClass()
+        self.assertTrue(interface_exists(peer[0]))
+        self.assertTrue(interface_exists(peer[1]))
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2020-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -17,11 +17,13 @@
 import os
 import json
 import unittest
-
-from base_interfaces_test import BasicInterfaceTest
 from copy import deepcopy
 from glob import glob
 
+from base_interfaces_test import BasicInterfaceTest
+from base_vyostest_shim import VyOSUnitTestSHIM
+
+from vyos.configsession import ConfigSessionError
 from vyos.ifconfig import Section
 from vyos.template import ip_from_cidr
 from vyos.utils.process import cmd
@@ -33,7 +35,6 @@ class BridgeInterfaceTest(BasicInterfaceTest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._base_path = ['interfaces', 'bridge']
-        cls._mirror_interfaces = ['dum21354']
         cls._members = []
 
         # we need to filter out VLAN interfaces identified by a dot (.)
@@ -55,7 +56,7 @@ class BridgeInterfaceTest(BasicInterfaceTest.TestCase):
     def tearDown(self):
         for intf in self._interfaces:
             self.cli_delete(self._base_path + [intf])
-
+        # always forward to base class
         super().tearDown()
 
     def test_isolated_interfaces(self):
@@ -157,6 +158,21 @@ class BridgeInterfaceTest(BasicInterfaceTest.TestCase):
                 # verify member is assigned to the bridge
                 self.assertEqual(interface, tmp['master'])
 
+    def test_bridge_multi_use_member(self):
+        # Define available bonding hash policies
+        bridges = ['br10', 'br20', 'br30']
+        for interface in bridges:
+            for member in self._members:
+                self.cli_set(self._base_path + [interface, 'member', 'interface', member])
+
+        # check validate() - cannot use the same member interfaces multiple times
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        # only keep the first bond interface configuration
+        for interface in bridges[1:]:
+            self.cli_delete(self._base_path + [interface])
+
+        self.cli_commit()
 
     def test_add_remove_bridge_member(self):
         # Add member interfaces to bridge and set STP cost/priority
@@ -460,5 +476,63 @@ class BridgeInterfaceTest(BasicInterfaceTest.TestCase):
             tmp = get_interface_config(interface)
             self.assertEqual(protocol, tmp['linkinfo']['info_data']['vlan_protocol'])
 
+    def test_bridge_delete_with_vxlan_heighbor_suppress(self):
+        vxlan_if = 'vxlan0'
+        vni = '123'
+        br_if = 'br0'
+        eth0_addr = '192.0.2.2/30'
+
+        self.cli_set(['interfaces', 'ethernet', 'eth0', 'address', eth0_addr])
+        self.cli_set(['interfaces', 'vxlan', vxlan_if, 'parameters', 'neighbor-suppress'])
+        self.cli_set(['interfaces', 'vxlan', vxlan_if, 'mtu', '1426'])
+        self.cli_set(['interfaces', 'vxlan', vxlan_if, 'source-address', ip_from_cidr(eth0_addr)])
+        self.cli_set(['interfaces', 'vxlan', vxlan_if, 'vni', vni])
+
+        self.cli_set(['interfaces', 'bridge', br_if, 'member', 'interface', vxlan_if])
+
+        self.cli_commit()
+
+        self.assertTrue(interface_exists(vxlan_if))
+        self.assertTrue(interface_exists(br_if))
+
+        # cannot delete bridge interface if "neighbor-suppress" parameter is configured for VXLAN interface
+        self.cli_delete(['interfaces', 'bridge', br_if])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_delete(['interfaces', 'vxlan', vxlan_if, 'parameters', 'neighbor-suppress'])
+
+        self.cli_commit()
+
+        self.assertFalse(interface_exists(br_if))
+
+        self.cli_delete(['interfaces', 'vxlan', vxlan_if])
+        self.cli_delete(['interfaces', 'ethernet', 'eth0', 'address', eth0_addr])
+
+    def test_bridge_root_bpdu_guard(self):
+        # Test if both bpdu_guard and root_guard configured
+        self.cli_set(['interfaces', 'bridge', 'br0', 'stp'])
+        self.cli_set(['interfaces', 'bridge', 'br0', 'member', 'interface', 'eth0', 'bpdu-guard'])
+        self.cli_set(['interfaces', 'bridge', 'br0', 'member', 'interface', 'eth0', 'root-guard'])
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+        self.cli_discard()
+
+        # Test if bpdu_guard configured
+        self.cli_set(['interfaces', 'bridge', 'br0', 'stp'])
+        self.cli_set(['interfaces', 'bridge', 'br0', 'member', 'interface', 'eth0', 'bpdu-guard'])
+        self.cli_commit()
+
+        tmp = read_file(f'/sys/class/net/eth0/brport/bpdu_guard')
+        self.assertEqual(tmp, '1')
+
+        # Test if root_guard configured
+        self.cli_delete(['interfaces', 'bridge', 'br0'])
+        self.cli_set(['interfaces', 'bridge', 'br0', 'stp'])
+        self.cli_set(['interfaces', 'bridge', 'br0', 'member', 'interface', 'eth0', 'root-guard'])
+        self.cli_commit()
+
+        tmp = read_file(f'/sys/class/net/eth0/brport/root_block')
+        self.assertEqual(tmp, '1')
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=VyOSUnitTestSHIM.TestCase.debug_on())

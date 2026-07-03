@@ -1,4 +1,4 @@
-# Copyright 2022-2024 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -43,7 +43,7 @@ def migrate(config: ConfigTree) -> None:
         return
 
     # We need a temporary copy of the config tree as the original one needs to be
-    # deleted first due to a change iun thge tagNode structure.
+    # deleted first due to a change in the tagNode structure.
     config.copy(base, tmp_base)
     config.delete(base)
 

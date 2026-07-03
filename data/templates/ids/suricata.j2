@@ -79,7 +79,7 @@ af-packet:
 {% for interface in suricata.interface %}
   - interface: {{ interface }}
     # Default clusterid. AF_PACKET will load balance packets based on flow.
-    cluster-id: 99
+    cluster-id: {{ 100 - loop.index }}
     # Default AF_PACKET cluster type. AF_PACKET can load balance per flow or per hash.
     # This is only supported for Linux kernel > 3.1
     # possible value are:
@@ -92,7 +92,7 @@ af-packet:
     # Recommended modes are cluster_flow on most boxes and cluster_cpu or cluster_qm on system
     # with capture card using RSS (requires cpu affinity tuning and system IRQ tuning)
     cluster-type: cluster_flow
-    # In some fragmentation cases, the hash can not be computed. If "defrag" is set
+    # In some fragmentation cases, the hash cannot be computed. If "defrag" is set
     # to yes, the kernel will do the needed defragmentation before sending the packets.
     defrag: yes
 {% endfor %}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2019-2023 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -13,15 +13,15 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 import argparse
-import pwd
 import struct
 import sys
 from time import ctime
 
 from tabulate import tabulate
 from vyos.config import Config
-
+from vyos.utils.auth import get_local_passwd_entries
 
 class UserInfo:
     def __init__(self, uid, name, user_type, is_locked, login_time, tty, host):
@@ -79,7 +79,9 @@ def list_users():
     vyos_users = cfg.list_effective_nodes('system login user')
     users = []
     with open('/var/log/lastlog', 'rb') as lastlog_file:
-        for (name, _, uid, _, _, _, _) in pwd.getpwall():
+        for entry in get_local_passwd_entries():
+            name = entry.pw_name
+            uid = entry.pw_uid
             lastlog_info = decode_lastlog(lastlog_file, uid)
             if lastlog_info is None:
                 continue

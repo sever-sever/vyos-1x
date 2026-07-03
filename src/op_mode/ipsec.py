@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2022-2024 VyOS maintainers and contributors
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -229,18 +229,48 @@ def _get_parent_sa_state(connection_name: str, data: list) -> str:
                 ike_state = 'up'
     return ike_state
 
+def _get_parent_ppk_state(connection_name: str, data: list) -> str:
+    """Get paren PPK state by connection name
 
-def _get_child_sa_state(connection_name: str, tunnel_name: str, data: list) -> str:
+    Args:
+        connection_name (str): Connection name
+        data (list): List of current SAs from vici
+
+    Returns:
+        Parent PPK state
+    """
+    ppk_state = 'no'
+    if not data:
+        return ppk_state
+    for sa in data:
+        # check if parent PPK exists
+        for connection, connection_conf in sa.items():
+            if connection_name != connection:
+                continue
+            if 'ppk' in connection_conf and connection_conf['ppk'].lower() == 'yes':
+                ppk_state = 'yes'
+    return ppk_state
+
+
+def _get_child_sa_state(
+    connection_name: str, tunnel_name: str, data: list, mode: str
+) -> str:
     """Get child SA state by connection and tunnel name
 
     Args:
         connection_name (str): Connection name
         tunnel_name (str): Tunnel name
         data (list): List of current SAs from vici
+        mode (str): Mode of child from vici list_connections
 
     Returns:
-        str: `up` if child SA state is 'installed' otherwise `down`
+        str: `up` if child SA state is 'installed' or child is passthrough
+             otherwise `down`
     """
+    # passthrough child (trap mode) has 'PASS' mode and is always up,
+    # but has no sa, so is not present in list_sas (data)
+    if mode == 'PASS':
+        return 'up'
     child_sa = 'down'
     if not data:
         return child_sa
@@ -327,10 +357,22 @@ def _get_raw_data_connections(list_connections: list, list_sas: list) -> list:
             base_list['local_id'] = conn_conf.get('local-1', '').get('id')
             base_list['remote_id'] = conn_conf.get('remote-1', '').get('id')
             base_list['version'] = conn_conf.get('version', 'IKE')
+            if conn_conf.get('ppk_id'):
+                if conn_conf.get('ppk_required') == 'yes':
+                    base_list['ppk'] = 'req/' + _get_parent_ppk_state(
+                        connection, list_sas
+                    )
+                else:
+                    base_list['ppk'] = 'opt/' + _get_parent_ppk_state(
+                        connection, list_sas
+                    )
+            else:
+                base_list['ppk'] = 'none/' + _get_parent_ppk_state(connection, list_sas)
             base_list['children'] = []
             children = conn_conf['children']
             for tunnel, tun_options in children.items():
-                state = _get_child_sa_state(connection, tunnel, list_sas)
+                mode = tun_options.get('mode')
+                state = _get_child_sa_state(connection, tunnel, list_sas, mode)
                 local_ts = tun_options.get('local-ts')
                 remote_ts = tun_options.get('remote-ts')
                 dpd_action = tun_options.get('dpd_action')
@@ -370,7 +412,7 @@ def _get_raw_connections_summary(list_conn, list_sas):
     return tun_dict
 
 
-def _get_formatted_output_conections(data):
+def _get_formatted_output_connections(data):
     from tabulate import tabulate
 
     connections = []
@@ -391,6 +433,8 @@ def _get_formatted_output_conections(data):
                 f'{entry["ike_proposal"]["hash"]}/'
                 f'{entry["ike_proposal"]["dh"]}'
             )
+        ppk = entry['ppk']
+
         connections.append(
             [
                 ike_name,
@@ -402,6 +446,7 @@ def _get_formatted_output_conections(data):
                 local_id,
                 remote_id,
                 proposal,
+                ppk,
             ]
         )
         for tun in entry['children']:
@@ -419,6 +464,7 @@ def _get_formatted_output_conections(data):
                     f'{tun["esp_proposal"]["hash"]}/'
                     f'{tun["esp_proposal"]["dh"]}'
                 )
+            ppk = '-'
             connections.append(
                 [
                     tun_name,
@@ -430,6 +476,7 @@ def _get_formatted_output_conections(data):
                     local_id,
                     remote_id,
                     proposal,
+                    ppk,
                 ]
             )
     connection_headers = [
@@ -442,8 +489,12 @@ def _get_formatted_output_conections(data):
         'Local id',
         'Remote id',
         'Proposal',
+        'PPK',
     ]
-    output = tabulate(connections, connection_headers, numalign='left')
+    output = (
+        'PPK Codes: none - Not Configured, opt - PPK is Optional, req - PPK is required, no - PPK not negotiated, yes - PPK negotiated\n'
+        + tabulate(connections, connection_headers, numalign='left')
+    )
     return output
 
 
@@ -453,7 +504,7 @@ def _get_formatted_output_conections(data):
 def _get_childsa_id_list(ike_sas: list) -> list:
     """
     Generate list of CHILD SA ids based on list of OrderingDict
-    wich is returned by vici
+    which is returned by vici
     :param ike_sas: list of IKE SAs generated by vici
     :type ike_sas: list
     :return: list of IKE SAs ids
@@ -472,7 +523,7 @@ def _get_con_childsa_name_list(
 ) -> list:
     """
     Generate list of CHILD SA ids based on list of OrderingDict
-    wich is returned by vici
+    which is returned by vici
     :param ike_sas: list of IKE SAs connections generated by vici
     :type ike_sas: list
     :param filter_dict: dict of filter options
@@ -700,15 +751,6 @@ def reset_profile_dst(profile: str, tunnel: str, nbma_dst: str):
                     ]
                 )
             )
-            # initiate IKE SAs
-            for ike in sa_nbma_list:
-                if ike_sa_name in ike:
-                    vyos.ipsec.vici_initiate(
-                        ike_sa_name,
-                        'dmvpn',
-                        ike[ike_sa_name]['local-host'],
-                        ike[ike_sa_name]['remote-host'],
-                    )
             print(
                 f'Profile {profile} tunnel {tunnel} remote-host {nbma_dst} reset result: success'
             )
@@ -732,18 +774,6 @@ def reset_profile_all(profile: str, tunnel: str):
                 )
             # terminate IKE SAs
             vyos.ipsec.terminate_vici_by_name(ike_sa_name, None)
-            # initiate IKE SAs
-            for ike in sa_list:
-                if ike_sa_name in ike:
-                    vyos.ipsec.vici_initiate(
-                        ike_sa_name,
-                        'dmvpn',
-                        ike[ike_sa_name]['local-host'],
-                        ike[ike_sa_name]['remote-host'],
-                    )
-                print(
-                    f'Profile {profile} tunnel {tunnel} remote-host {ike[ike_sa_name]["remote-host"]} reset result: success'
-                )
             print(f'Profile {profile} tunnel {tunnel} reset result: success')
         except vyos.ipsec.ViciInitiateError as err:
             raise vyos.opmode.UnconfiguredSubsystem(err)
@@ -760,7 +790,7 @@ def show_sa(raw: bool):
 
 def _get_output_sas_detail(ra_output_list: list) -> str:
     """
-    Formate all IKE SAs detail output
+    Format all IKE SAs detail output
     :param ra_output_list: IKE SAs list
     :type ra_output_list: list
     :return: formatted RA IKE SAs detail output
@@ -783,7 +813,7 @@ def show_connections(raw: bool):
         return _get_raw_data_connections(list_conns, list_sas)
 
     connections = _get_raw_data_connections(list_conns, list_sas)
-    return _get_formatted_output_conections(connections)
+    return _get_formatted_output_connections(connections)
 
 
 def show_connections_summary(raw: bool):
@@ -891,7 +921,7 @@ def _get_formatted_ipsec_proposal(sa: dict) -> str:
 
 def _get_output_ra_sas_detail(ra_output_list: list) -> str:
     """
-    Formate RA IKE SAs detail output
+    Format RA IKE SAs detail output
     :param ra_output_list: IKE SAs list
     :type ra_output_list: list
     :return: formatted RA IKE SAs detail output

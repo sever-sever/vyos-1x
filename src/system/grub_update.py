@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2023 VyOS maintainers and contributors <maintainers@vyos.io>
+# Copyright VyOS maintainers and contributors <maintainers@vyos.io>
 #
 # This file is part of VyOS.
 #
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     vyos_menuentries = compat.parse_menuentries(grub_cfg_main)
     vyos_versions = compat.find_versions(vyos_menuentries)
     unparsed_items = compat.filter_unparsed(grub_cfg_main)
-    # compatibilty for raid installs
+    # compatibility for raid installs
     search_root = compat.get_search_root(unparsed_items)
     common_dict = {}
     common_dict['search_root'] = search_root

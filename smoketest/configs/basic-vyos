@@ -32,6 +32,27 @@ interfaces {
     loopback lo {
     }
 }
+load-balancing {
+    reverse-proxy {
+        backend bk-01 {
+            balance "round-robin"
+            mode "tcp"
+            server srv01 {
+                address "192.0.2.11"
+                port "8881"
+            }
+            server srv02 {
+                address "192.0.2.12"
+                port "8882"
+            }
+        }
+        service my-tcp-api {
+            backend "bk-01"
+            mode "tcp"
+            port "8888"
+        }
+    }
+}
 protocols {
     static {
         arp 192.168.0.20 {
@@ -78,38 +99,82 @@ protocols {
 }
 service {
     dhcp-server {
+        dynamic-dns-update {
+            send-updates enable
+            forward-domain domain.lan {
+                dns-server 1 {
+                    address 192.168.0.1
+                }
+                dns-server 2 {
+                    address 100.100.0.1
+                }
+                key-name domain-lan-updates
+            }
+            reverse-domain 0.168.192.in-addr.arpa {
+                dns-server 1 {
+                    address 192.168.0.1
+                }
+                dns-server 2 {
+                    address 100.100.0.1
+                }
+                key-name reverse-0-168-192
+            }
+            tsig-key domain-lan-updates {
+                algorithm sha256
+                secret SXQncyBXZWRuZXNkYXkgbWFoIGR1ZGVzIQ==
+            }
+            tsig-key reverse-0-168-192 {
+                algorithm sha256
+                secret VGhhbmsgR29kIGl0J3MgRnJpZGF5IQ==
+            }
+            conflict-resolution enable
+        }
         shared-network-name LAN {
             authoritative
+            dynamic-dns-update {
+                send-updates enable
+                ttl-percent 75
+            }
             subnet 192.168.0.0/24 {
-                default-router 192.168.0.1
-                dns-server 192.168.0.1
-                domain-name vyos.net
-                domain-search vyos.net
+                dynamic-dns-update {
+                    send-updates enable
+                    generated-prefix myhost
+                    qualifying-suffix lan1.domain.lan
+                }
+                option {
+                    default-router 192.168.0.1
+                    domain-name vyos.net
+                    domain-search vyos.net
+                    name-server 192.168.0.1
+                }
                 range LANDynamic {
                     start 192.168.0.30
                     stop 192.168.0.240
                 }
                 static-mapping TEST1-1 {
                     ip-address 192.168.0.11
-                    mac-address 00:01:02:03:04:05
+                    mac 00:01:02:03:04:05
                 }
                 static-mapping TEST1-2 {
+                    disable
                     ip-address 192.168.0.12
-                    mac-address 00:01:02:03:04:05
+                    mac 00:01:02:03:04:05
                 }
                 static-mapping TEST2-1 {
                     ip-address 192.168.0.21
-                    mac-address 00:01:02:03:04:21
+                    mac 00:01:02:03:04:21
                 }
                 static-mapping TEST2-2 {
+                    disable
                     ip-address 192.168.0.21
-                    mac-address 00:01:02:03:04:22
+                    mac 00:01:02:03:04:22
                 }
+                subnet-id 1
             }
         }
     }
     dhcpv6-server {
-        shared-network-name LAN6 {
+        shared-network-name LAN6-1 {
             subnet fe88::/56 {
                 address-range {
                     prefix fe88::/60 {
@@ -128,6 +193,8 @@ service {
                     }
                 }
             }
+        }
+        shared-network-name LAN6-2 {
             subnet fe89::/56 {
                 address-range {
                     prefix fe89::/60 {
@@ -215,6 +282,9 @@ system {
             facility security {
                 level info
             }
+            marker {
+                interval 1000
+            }
             preserve-fqdn
         }
         host syslog.vyos.net {
@@ -230,6 +300,7 @@ system {
             format {
                 octet-counted
             }
+            protocol tcp
             port 8000
         }
     }
